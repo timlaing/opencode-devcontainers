@@ -15,19 +15,23 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
+import { join, delimiter } from 'path'
 import { tmpdir } from 'os'
 import {
   mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync, utimesSync,
   realpathSync,
 } from 'fs'
-import { execSync } from 'child_process'
+import { execSync, execFileSync } from 'child_process'
 
 // Module under test
 import { devcontainers } from '../../plugin/index.js'
-import { saveSession, deleteSession } from '../../plugin/helpers.js'
+import { saveSession as persistSession } from '../../plugin/helpers.js'
 import { getOverridePath } from '../../plugin/core/config.js'
 import { JOB_STATUS } from '../../plugin/core/jobs.js'
+
+// The plugin resolves commands via `which` and runs them with `sh -c`, and
+// the fake CLIs here are POSIX shell scripts — so this suite is POSIX-only.
+const describeIfPosix = process.platform === 'win32' ? describe.skip : describe
 
 // ============ Test environment ============
 
@@ -35,11 +39,23 @@ let testDir
 let fakeBin
 let originalPath
 let originalCwd
+let savedFakeEnv
 let sessionCounter = 0
+
+// Session IDs saved or written during a test. makePlugin() reports these to
+// the fake client so factory-init cleanupStaleSessions keeps their files —
+// otherwise file-removal assertions could pass for the wrong reason.
+const activeSessionIDs = new Set()
 
 /** Unique session ID per call — helpers.js keeps a module-level session cache */
 function sid(label) {
   return `test-${label}-${Date.now()}-${++sessionCounter}`
+}
+
+/** saveSession wrapper that also registers the ID as active for the fake client */
+function saveSession(sessionID, data) {
+  activeSessionIDs.add(sessionID)
+  return persistSession(sessionID, data)
 }
 
 function writeJobs(jobs) {
@@ -47,6 +63,7 @@ function writeJobs(jobs) {
 }
 
 function writeSessionFile(sessionID, data) {
+  activeSessionIDs.add(sessionID)
   mkdirSync(join(testDir, 'sessions'), { recursive: true })
   writeFileSync(join(testDir, 'sessions', `${sessionID}.json`), JSON.stringify(data, null, 2))
 }
@@ -69,6 +86,24 @@ function makeGitRepo(dir) {
   execSync('git add .', { cwd: dir })
   execSync('git -c user.email=test@example.com -c user.name=test commit -m init', { cwd: dir })
   return dir
+}
+
+/**
+ * Wait for a background start job to reach a terminal state, so teardown
+ * never yanks the temp dirs/env out from under a still-running upBackground.
+ */
+async function waitForJobSettled(workspace, timeoutMs = 10000) {
+  const jobsPath = join(testDir, 'cache', 'jobs.json')
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (existsSync(jobsPath)) {
+      const jobs = JSON.parse(readFileSync(jobsPath, 'utf-8'))
+      const status = jobs[workspace]?.status
+      if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.FAILED) return status
+    }
+    await new Promise(r => setTimeout(r, 50))
+  }
+  throw new Error(`background job for ${workspace} did not settle within ${timeoutMs}ms`)
 }
 
 /**
@@ -146,6 +181,17 @@ beforeEach(() => {
   originalPath = process.env.PATH
   originalCwd = process.cwd()
   sessionCounter = 0
+  activeSessionIDs.clear()
+
+  // Snapshot and clear fake-CLI flags so inherited values don't skew results
+  savedFakeEnv = {
+    FAKE_DC_UP_FAIL: process.env.FAKE_DC_UP_FAIL,
+    FAKE_DOCKER_RUNNING: process.env.FAKE_DOCKER_RUNNING,
+    FAKE_DOCKER_IMAGE: process.env.FAKE_DOCKER_IMAGE,
+  }
+  delete process.env.FAKE_DC_UP_FAIL
+  delete process.env.FAKE_DOCKER_RUNNING
+  delete process.env.FAKE_DOCKER_IMAGE
 
   testDir = join(tmpdir(), `ocdc-plugin-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   mkdirSync(testDir, { recursive: true })
@@ -172,7 +218,7 @@ beforeEach(() => {
   mkdirSync(fakeBin, { recursive: true })
   installFakeDevcontainer()
   installFakeDocker()
-  process.env.PATH = `${fakeBin}:${originalPath}`
+  process.env.PATH = `${fakeBin}${delimiter}${originalPath}`
 
   // Run from a non-git directory so repo inference in resolveWorkspace and
   // getRepoRoot(cwd) can't reach the real project repository.
@@ -188,20 +234,24 @@ afterEach(() => {
   delete process.env.OCDC_WORKTREES_DIR
   delete process.env.OCDC_SESSIONS_DIR
   delete process.env.OCDC_CONFIG_DIR
-  delete process.env.FAKE_DC_UP_FAIL
-  delete process.env.FAKE_DOCKER_RUNNING
-  delete process.env.FAKE_DOCKER_IMAGE
+  // Restore any fake-CLI flags inherited from the outer environment
+  for (const [key, value] of Object.entries(savedFakeEnv)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
   rmSync(testDir, { recursive: true, force: true })
 })
 
 /** Build the plugin via the factory with a fake client */
 async function makePlugin(clientOpts = {}) {
-  return await devcontainers({ client: makeFakeClient(clientOpts) })
+  const sessions = clientOpts.sessions
+    ?? [...activeSessionIDs].map(id => ({ id }))
+  return await devcontainers({ client: makeFakeClient({ sessions, ...clientOpts }) })
 }
 
 // ============ Factory ============
 
-describe('devcontainers factory', () => {
+describeIfPosix('devcontainers factory', () => {
   test('returns all four tools and the interception hook', async () => {
     const plugin = await makePlugin()
     assert.ok(plugin.tool.devcontainer_exec, 'devcontainer_exec tool present')
@@ -291,7 +341,7 @@ describe('devcontainers factory', () => {
 
 // ============ devcontainer_exec tool ============
 
-describe('devcontainer_exec tool', () => {
+describeIfPosix('devcontainer_exec tool', () => {
   test('errors without a session workspace', async () => {
     const plugin = await makePlugin()
     const result = await plugin.tool.devcontainer_exec.execute(
@@ -430,7 +480,7 @@ describe('devcontainer_exec tool', () => {
 
 // ============ devcontainer tool ============
 
-describe('devcontainer tool', () => {
+describeIfPosix('devcontainer tool', () => {
   test('reports missing devcontainer CLI', async () => {
     process.env.PATH = join(testDir, 'empty-bin')
     mkdirSync(process.env.PATH, { recursive: true })
@@ -571,7 +621,7 @@ describe('devcontainer tool', () => {
     const otherID = sid('other')
     writeSessionFile(otherID, { workspace })
 
-    const plugin = await makePlugin({ sessions: [{ id: otherID }] })
+    const plugin = await makePlugin()
     const result = await plugin.tool.devcontainer.execute(
       { target: 'rm warnrepo/warnbr' },
       { sessionID }
@@ -690,6 +740,11 @@ describe('devcontainer tool', () => {
     const session = JSON.parse(readFileSync(join(testDir, 'sessions', `${sessionID}.json`), 'utf-8'))
     assert.strictEqual(session.starting, true, 'session marked as starting')
     assert.strictEqual(session.branch, 'feature-x')
+
+    // Let the background up() finish (clone fails: branch doesn't exist) so
+    // teardown doesn't remove the temp dirs/env out from under it
+    const status = await waitForJobSettled(session.workspace)
+    assert.strictEqual(status, JOB_STATUS.FAILED, 'background job settles as failed')
   })
 
   test('target: reports validation failure for a new branch outside a git repo', async () => {
@@ -740,6 +795,10 @@ describe('devcontainer tool', () => {
 
     const session = JSON.parse(readFileSync(join(testDir, 'sessions', `${sessionID}.json`), 'utf-8'))
     assert.strictEqual(session.starting, true, 'session marked as starting')
+
+    // Let the background up() finish against the fake CLI so teardown
+    // doesn't remove the temp dirs/env out from under it
+    await waitForJobSettled(workspace)
   })
 
   test('target: reports missing devcontainer.json for a stopped clone', async () => {
@@ -776,7 +835,7 @@ describe('devcontainer tool', () => {
 
 // ============ worktree tool ============
 
-describe('worktree tool', () => {
+describeIfPosix('worktree tool', () => {
   test('status: no session', async () => {
     const plugin = await makePlugin()
     const result = await plugin.tool.worktree.execute({}, { sessionID: sid('wt-none') })
@@ -847,7 +906,7 @@ describe('worktree tool', () => {
   test('rejects when already inside a worktree', async () => {
     const mainRepo = makeGitRepo(join(testDir, 'wt-main'))
     const wtPath = join(testDir, 'existing-wt')
-    execSync(`git worktree add -b existing-branch "${wtPath}"`, { cwd: mainRepo })
+    execFileSync('git', ['worktree', 'add', '-b', 'existing-branch', wtPath], { cwd: mainRepo })
 
     const plugin = await makePlugin()
     const result = await plugin.tool.worktree.execute(
@@ -927,7 +986,7 @@ describe('worktree tool', () => {
 
 // ============ workspaces tool ============
 
-describe('workspaces tool', () => {
+describeIfPosix('workspaces tool', () => {
   test('lists nothing when no workspaces exist', async () => {
     const plugin = await makePlugin()
     const result = await plugin.tool.workspaces.execute({}, {})
@@ -981,7 +1040,7 @@ describe('workspaces tool', () => {
 
 // ============ tool.execute.before (bash interception) ============
 
-describe('tool.execute.before', () => {
+describeIfPosix('tool.execute.before', () => {
   async function intercept(plugin, { tool = 'bash', sessionID, command, workdir }) {
     const input = { tool, sessionID }
     const output = { args: { command, workdir } }
@@ -1096,7 +1155,7 @@ describe('tool.execute.before', () => {
     const workspace = join(testDir, 'hook-started-ws')
     mkdirSync(workspace, { recursive: true })
     saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace, starting: true })
-    writeJobs({ [workspace]: { status: JOB_STATUS.COMPLETED, port: 13000, repo: 'repo', branch: 'feat' } })
+    writeJobs({ [workspace]: { status: JOB_STATUS.COMPLETED, port: 13000, completedAt: new Date().toISOString(), repo: 'repo', branch: 'feat' } })
 
     const plugin = await makePlugin()
     const output = await intercept(plugin, { sessionID, command: 'npm test' })
