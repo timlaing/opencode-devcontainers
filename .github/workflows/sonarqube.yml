@@ -45,12 +45,10 @@ jobs:
           sudo npm install -g @devcontainers/cli
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Install opencode
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
+        run: brew install opencode
 
       - name: Setup opencode plugin
         run: |
