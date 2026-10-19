@@ -48,7 +48,9 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Install opencode
-        run: sudo npm install -g opencode-ai
+        run: |
+          sudo npm install -g opencode-ai
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config" "$HOME/.cache" 2>/dev/null || true
 
       - name: Setup opencode plugin
         run: |
