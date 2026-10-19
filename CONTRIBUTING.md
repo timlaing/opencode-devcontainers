@@ -47,7 +47,8 @@ Run tests in watch mode:
 npm run test:watch
 ```
 
-Run tests with coverage (the same measurement CI uploads for SonarQube):
+Run tests with coverage (for local analysis; the `SonarQube` workflow computes
+its own coverage in CI):
 
 ```bash
 npm run test:coverage
@@ -154,21 +155,17 @@ vulnerabilities` check.
 
 ## SonarQube analysis
 
-The `SonarQube` workflow follows successful `CI` runs for main pushes and
-same-repository pull requests. CI uploads test coverage as an artifact; the
-scan downloads it from that exact run and waits for the quality gate. It uses
-trusted workflow arguments, removes PR-controlled scanner properties, and does
-not execute repository code with the Sonar credential.
+The `SonarQube` workflow runs alongside `CI` on main pushes and pull requests.
+It installs the toolchain, runs the tests with coverage itself, then scans and
+waits for the quality gate. It fails if the `SONAR_TOKEN` secret is missing.
 `sonar-project.properties` documents the same source/test layout for local
 analysis.
 
 Project: `timlaing_opencode-devcontainers`, organization: `timlaing`, service:
-`https://sonarcloud.io`. Enable GitHub variable `SONAR_ENABLED=true` and supply
-Actions secret `SONAR_TOKEN` only after the Sonar project exists with matching
-visibility. Disable Sonar automatic analysis when using this CI workflow. A
-missing credential fails an enabled scan; disabled scanning is explicitly
-skipped. The SonarQube badges in the README stay blank until the project
-exists.
+`https://sonarcloud.io`. Supply Actions secret `SONAR_TOKEN` only after the Sonar
+project exists with matching visibility. Disable Sonar automatic analysis when
+using this CI workflow. The SonarQube badges in the README populate after the
+first successful scan.
 
 ## Releasing
 

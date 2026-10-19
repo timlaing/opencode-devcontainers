@@ -62,21 +62,8 @@ jobs:
           }
           EOF
 
-      - name: Run tests with coverage
-        run: npm run test:coverage
-
-      - name: Record coverage revision
-        run: git rev-parse HEAD > coverage/coverage-revision.txt
-
-      - name: Upload coverage for SonarQube
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: test-coverage
-          path: |
-            coverage/lcov.info
-            coverage/coverage-revision.txt
-          if-no-files-found: error
-          retention-days: 7
+      - name: Run tests
+        run: npm test
 
   release:
     name: Release

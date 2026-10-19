@@ -1,101 +1,103 @@
 name: SonarQube
+
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   sonarqube:
-    name: SonarQube quality gate
-    if: >-
-      vars.SONAR_ENABLED == 'true' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.event == 'pull_request' ||
-       (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: read
+    env:
+      SONAR_HOST_URL: https://sonarcloud.io
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Download test coverage from the successful CI run
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: test-coverage
-          path: .sonar-coverage
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-      - name: Validate metadata and select analysis mode
-        id: metadata
-        env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PYCODE'
-          import json, os, re, shlex, subprocess
-          from pathlib import Path
-          sha = os.environ['HEAD_SHA']
-          if not re.fullmatch('[0-9a-f]{40}', sha):
-              raise ValueError('Invalid CI revision')
-          revision = Path('.sonar-coverage/coverage-revision.txt').read_text().strip()
-          if not re.fullmatch('[0-9a-f]{40}', revision):
-              raise ValueError('Invalid coverage revision')
-          args = [f'-Dsonar.scm.revision={revision}']
-          if os.environ['RUN_EVENT'] == 'pull_request':
-              pulls = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GH_REPO']}/commits/{sha}/pulls"], text=True))
-              matches = [p for p in pulls if p['state'] == 'open' and p['head']['sha'] == sha and p['base']['repo']['full_name'] == os.environ['GH_REPO']]
-              if len(matches) != 1:
-                  raise ValueError('Cannot uniquely match current PR to tested commit')
-              pr = matches[0]
-              if revision != sha and revision != pr['merge_commit_sha']:
-                  raise ValueError('Coverage revision is not the current PR head or merge commit')
-              for value in (pr['head']['ref'], pr['base']['ref']):
-                  subprocess.run(['git', 'check-ref-format', '--branch', value], check=True, stdout=subprocess.DEVNULL)
-              args += [f"-Dsonar.pullrequest.key={pr['number']}", f"-Dsonar.pullrequest.branch={pr['head']['ref']}", f"-Dsonar.pullrequest.base={pr['base']['ref']}"]
-          else:
-              if revision != sha:
-                  raise ValueError('Coverage revision does not match the main CI commit')
-              args += ['-Dsonar.branch.name=main']
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-              stream.write('revision=' + revision + '\n')
-              stream.write('args=' + shlex.join(args) + '\n')
-          PYCODE
-      - name: Check out the validated coverage revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ steps.metadata.outputs.revision }}
-          fetch-depth: 0
-          persist-credentials: false
-          clean: false # Preserve the downloaded coverage reports.
-      - name: Remove pull-request-controlled scanner configuration
-        run: rm -f sonar-project.properties
+
       - name: Require SonarQube credentials
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: test -n "$SONAR_TOKEN"
-      - name: Scan and wait for quality gate
+        if: env.SONAR_TOKEN == ''
+        run: exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@test.local"
+          git config --global user.name "CI Test"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          sudo npm install -g @devcontainers/cli
+
+      - name: Install Node.js dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install opencode
+        run: |
+          sudo npm install -g opencode-ai
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config" "$HOME/.cache" 2>/dev/null || true
+
+      - name: Setup opencode plugin
+        run: |
+          mkdir -p ~/.config/opencode/plugins
+          cp -r plugin ~/.config/opencode/plugins/opencode-devcontainers
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "model": "opencode/gpt-5-nano",
+            "plugin": ["/home/runner/.config/opencode/plugins/opencode-devcontainers"]
+          }
+          EOF
+
+      - name: Run tests with coverage
+        run: >-
+          node --test --experimental-test-coverage
+          --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=lcov --test-reporter-destination=lcov.info
+          test/unit/*.test.js
+
+      - name: SonarQube Scan (branch)
+        if: github.event_name != 'pull_request'
         uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
-        env:
-          SONAR_HOST_URL: https://sonarcloud.io
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >-
             -Dsonar.projectKey=timlaing_opencode-devcontainers
             -Dsonar.organization=timlaing
             -Dsonar.projectName=opencode-devcontainers
-            -Dsonar.sources=plugin,.github
+            -Dsonar.sources=plugin,install.sh,.releaserc.cjs,.devcontainer,.github/workflows
             -Dsonar.tests=test
-            -Dsonar.exclusions=**/node_modules/**,**/dist/**
-            -Dsonar.javascript.lcov.reportPaths=.sonar-coverage/lcov.info
+            -Dsonar.javascript.lcov.reportPaths=lcov.info
             -Dsonar.qualitygate.wait=true
-            ${{ steps.metadata.outputs.args }}
+
+      - name: SonarQube Scan (pull request)
+        if: github.event_name == 'pull_request'
+        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        with:
+          args: >-
+            -Dsonar.projectKey=timlaing_opencode-devcontainers
+            -Dsonar.organization=timlaing
+            -Dsonar.projectName=opencode-devcontainers
+            -Dsonar.sources=plugin,install.sh,.releaserc.cjs,.devcontainer,.github/workflows
+            -Dsonar.tests=test
+            -Dsonar.javascript.lcov.reportPaths=lcov.info
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+            -Dsonar.pullrequest.provider=github
+            -Dsonar.pullrequest.github.repository=${{ github.repository }}
+            -Dsonar.qualitygate.wait=true
