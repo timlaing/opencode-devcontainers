@@ -50,17 +50,19 @@ jobs:
           curl -fsSL https://opencode.ai/install | bash
           echo "$HOME/.opencode/bin" >> $GITHUB_PATH
 
-      - name: Setup opencode plugin
+      # Smoke check: the combined entrypoint must load as a recognized V2
+      # plugin (the ID only appears when the V2 definition is picked up).
+      - name: Verify plugin loads under OpenCode V2
         run: |
-          mkdir -p ~/.config/opencode/plugins
-          cp -r plugin ~/.config/opencode/plugins/opencode-devcontainers
-          mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/opencode.json << 'EOF'
+          SCRATCH=$(mktemp -d)
+          cat > "$SCRATCH/opencode.json" << EOF
           {
-            "model": "opencode/gpt-5-nano",
-            "plugin": ["/home/runner/.config/opencode/plugins/opencode-devcontainers"]
+            "plugins": ["$GITHUB_WORKSPACE"]
           }
           EOF
+          cd "$SCRATCH"
+          opencode plugin list | tee /tmp/plugin-list.txt
+          grep -q "opencode-devcontainers" /tmp/plugin-list.txt
 
       - name: Run tests
         run: npm test

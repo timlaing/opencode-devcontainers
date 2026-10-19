@@ -1,5 +1,6 @@
 /**
- * Tests for plugin/index.js — the plugin entry point.
+ * Tests for the V1 plugin implementation (server() on the combined
+ * entrypoint in plugin/index.js, implemented in plugin/v1.js).
  *
  * Covers:
  * - The devcontainers() factory: returned shape and init side-effects
@@ -8,244 +9,43 @@
  * - The tool.execute.before bash interception hook
  *
  * External commands (devcontainer CLI, docker) are replaced with fake
- * executables on PATH so tests are hermetic and deterministic.
+ * executables on PATH so tests are hermetic and deterministic. Shared
+ * harness lives in ./harness.js.
  *
  * Run with: node --test test/unit/plugin.test.js
  */
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join, delimiter } from 'path'
-import { tmpdir } from 'os'
+import { join } from 'path'
 import {
-  mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync, utimesSync,
-  realpathSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync,
 } from 'fs'
-import { execSync, execFileSync } from 'child_process'
+import { execFileSync } from 'child_process'
 
 // Module under test
 import { devcontainers } from '../../plugin/index.js'
-import { saveSession as persistSession } from '../../plugin/helpers.js'
 import { getOverridePath } from '../../plugin/core/config.js'
 import { JOB_STATUS } from '../../plugin/core/jobs.js'
+
+// Shared hermetic harness (testDir/fakeBin are live bindings)
+import {
+  testDir,
+  sid, saveSession, writeSessionFile, writeJobs, waitFor, makeGitRepo,
+  waitForJobSettled, makeFakeClient, activeSessions,
+  setupEnv, teardownEnv,
+} from './harness.js'
 
 // The plugin resolves commands via `which` and runs them with `sh -c`, and
 // the fake CLIs here are POSIX shell scripts — so this suite is POSIX-only.
 const describeIfPosix = process.platform === 'win32' ? describe.skip : describe
 
-// ============ Test environment ============
-
-let testDir
-let fakeBin
-let originalPath
-let originalCwd
-let savedFakeEnv
-let sessionCounter = 0
-
-// Session IDs saved or written during a test. makePlugin() reports these to
-// the fake client so factory-init cleanupStaleSessions keeps their files —
-// otherwise file-removal assertions could pass for the wrong reason.
-const activeSessionIDs = new Set()
-
-/** Unique session ID per call — helpers.js keeps a module-level session cache */
-function sid(label) {
-  return `test-${label}-${Date.now()}-${++sessionCounter}`
-}
-
-/** saveSession wrapper that also registers the ID as active for the fake client */
-function saveSession(sessionID, data) {
-  activeSessionIDs.add(sessionID)
-  return persistSession(sessionID, data)
-}
-
-function writeJobs(jobs) {
-  writeFileSync(join(testDir, 'cache', 'jobs.json'), JSON.stringify(jobs, null, 2))
-}
-
-function writeSessionFile(sessionID, data) {
-  activeSessionIDs.add(sessionID)
-  mkdirSync(join(testDir, 'sessions'), { recursive: true })
-  writeFileSync(join(testDir, 'sessions', `${sessionID}.json`), JSON.stringify(data, null, 2))
-}
-
-/** Poll until fn() is true or timeout — for fire-and-forget init work */
-async function waitFor(fn, timeoutMs = 3000) {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    if (await fn()) return true
-    await new Promise(r => setTimeout(r, 25))
-  }
-  return false
-}
-
-/** Create a small real git repo and return its root */
-function makeGitRepo(dir) {
-  mkdirSync(dir, { recursive: true })
-  execSync('git init -b main', { cwd: dir })
-  writeFileSync(join(dir, 'README.md'), '# test repo\n')
-  execSync('git add .', { cwd: dir })
-  execSync('git -c user.email=test@example.com -c user.name=test commit -m init', { cwd: dir })
-  return dir
-}
-
-/**
- * Wait for a background start job to reach a terminal state, so teardown
- * never yanks the temp dirs/env out from under a still-running upBackground.
- */
-async function waitForJobSettled(workspace, timeoutMs = 10000) {
-  const jobsPath = join(testDir, 'cache', 'jobs.json')
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    if (existsSync(jobsPath)) {
-      const jobs = JSON.parse(readFileSync(jobsPath, 'utf-8'))
-      const status = jobs[workspace]?.status
-      if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.FAILED) return status
-    }
-    await new Promise(r => setTimeout(r, 50))
-  }
-  throw new Error(`background job for ${workspace} did not settle within ${timeoutMs}ms`)
-}
-
-/**
- * Fake devcontainer CLI:
- * - `exec ... -- sh -c CMD` runs CMD via sh, passing through output/exit code
- * - `up ...` exits 0 (or 1 when FAKE_DC_UP_FAIL is set)
- */
-function installFakeDevcontainer() {
-  const script = `#!/bin/sh
-sub="$1"
-if [ "$sub" = "exec" ]; then
-  shift
-  while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
-  [ "$1" = "--" ] && shift
-  exec "$@"
-fi
-if [ "$sub" = "up" ]; then
-  if [ -n "$FAKE_DC_UP_FAIL" ]; then
-    echo "devcontainer up failed" >&2
-    exit 1
-  fi
-  exit 0
-fi
-exit 0
-`
-  const path = join(fakeBin, 'devcontainer')
-  writeFileSync(path, script)
-  chmodSync(path, 0o755)
-}
-
-/**
- * Fake docker CLI:
- * - `ps ...` prints a container ID only when FAKE_DOCKER_RUNNING is set
- * - `inspect ...` prints an image ref when FAKE_DOCKER_IMAGE is set
- * - everything else exits 0
- */
-function installFakeDocker() {
-  const script = `#!/bin/sh
-sub="$1"
-if [ "$sub" = "ps" ]; then
-  if [ -n "$FAKE_DOCKER_RUNNING" ]; then
-    echo "fakecontainer123"
-  fi
-  exit 0
-fi
-if [ "$sub" = "inspect" ]; then
-  if [ -n "$FAKE_DOCKER_IMAGE" ]; then
-    echo "fake-image:latest"
-  fi
-  exit 0
-fi
-exit 0
-`
-  const path = join(fakeBin, 'docker')
-  writeFileSync(path, script)
-  chmodSync(path, 0o755)
-}
-
-/** Minimal fake OpenCode client for factory init tests */
-function makeFakeClient({ configDir, sessions = [], failPaths = false } = {}) {
-  return {
-    path: {
-      get: async () => {
-        if (failPaths) throw new Error('api unavailable')
-        return { data: configDir ? { config: configDir } : {} }
-      },
-    },
-    session: {
-      list: async () => ({ data: sessions }),
-    },
-  }
-}
-
-beforeEach(() => {
-  originalPath = process.env.PATH
-  originalCwd = process.cwd()
-  sessionCounter = 0
-  activeSessionIDs.clear()
-
-  // Snapshot and clear fake-CLI flags so inherited values don't skew results
-  savedFakeEnv = {
-    FAKE_DC_UP_FAIL: process.env.FAKE_DC_UP_FAIL,
-    FAKE_DOCKER_RUNNING: process.env.FAKE_DOCKER_RUNNING,
-    FAKE_DOCKER_IMAGE: process.env.FAKE_DOCKER_IMAGE,
-  }
-  delete process.env.FAKE_DC_UP_FAIL
-  delete process.env.FAKE_DOCKER_RUNNING
-  delete process.env.FAKE_DOCKER_IMAGE
-
-  testDir = join(tmpdir(), `ocdc-plugin-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-  mkdirSync(testDir, { recursive: true })
-  // Resolve symlinks (macOS /var -> /private/var) so test paths match
-  // what git reports from rev-parse --show-toplevel
-  testDir = realpathSync(testDir)
-
-  process.env.HOME = join(testDir, 'home')
-  process.env.OCDC_CACHE_DIR = join(testDir, 'cache')
-  process.env.OCDC_CLONES_DIR = join(testDir, 'clones')
-  process.env.OCDC_WORKTREES_DIR = join(testDir, 'worktrees')
-  process.env.OCDC_SESSIONS_DIR = join(testDir, 'sessions')
-  process.env.OCDC_CONFIG_DIR = join(testDir, 'config')
-
-  mkdirSync(process.env.HOME, { recursive: true })
-  mkdirSync(process.env.OCDC_CACHE_DIR, { recursive: true })
-  mkdirSync(process.env.OCDC_CLONES_DIR, { recursive: true })
-  mkdirSync(process.env.OCDC_WORKTREES_DIR, { recursive: true })
-  mkdirSync(process.env.OCDC_SESSIONS_DIR, { recursive: true })
-  mkdirSync(process.env.OCDC_CONFIG_DIR, { recursive: true })
-  mkdirSync(join(process.env.OCDC_CACHE_DIR, 'overrides'), { recursive: true })
-
-  fakeBin = join(testDir, 'bin')
-  mkdirSync(fakeBin, { recursive: true })
-  installFakeDevcontainer()
-  installFakeDocker()
-  process.env.PATH = `${fakeBin}${delimiter}${originalPath}`
-
-  // Run from a non-git directory so repo inference in resolveWorkspace and
-  // getRepoRoot(cwd) can't reach the real project repository.
-  process.chdir(testDir)
-})
-
-afterEach(() => {
-  process.env.PATH = originalPath
-  process.chdir(originalCwd)
-  delete process.env.HOME
-  delete process.env.OCDC_CACHE_DIR
-  delete process.env.OCDC_CLONES_DIR
-  delete process.env.OCDC_WORKTREES_DIR
-  delete process.env.OCDC_SESSIONS_DIR
-  delete process.env.OCDC_CONFIG_DIR
-  // Restore any fake-CLI flags inherited from the outer environment
-  for (const [key, value] of Object.entries(savedFakeEnv)) {
-    if (value === undefined) delete process.env[key]
-    else process.env[key] = value
-  }
-  rmSync(testDir, { recursive: true, force: true })
-})
+beforeEach(setupEnv)
+afterEach(teardownEnv)
 
 /** Build the plugin via the factory with a fake client */
 async function makePlugin(clientOpts = {}) {
-  const sessions = clientOpts.sessions
-    ?? [...activeSessionIDs].map(id => ({ id }))
+  const sessions = clientOpts.sessions ?? activeSessions()
   return await devcontainers({ client: makeFakeClient({ sessions, ...clientOpts }) })
 }
 
