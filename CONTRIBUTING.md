@@ -25,13 +25,19 @@ Thanks for your interest in contributing!
 
 4. Set up the plugin for local testing:
    ```bash
-   # Link plugin to OpenCode plugins directory
-   mkdir -p ~/.config/opencode/plugins
-   ln -sf "$(pwd)/plugin" ~/.config/opencode/plugins/opencode-devcontainers
-
-   # Add to opencode.json
-   # "plugin": ["/path/to/opencode-devcontainers/plugin"]
+   # Add the repo to your opencode.json(c) — the repo root loads as a package
+   # V2: "plugins": ["/path/to/opencode-devcontainers"]
+   # V1: "plugin": ["/path/to/opencode-devcontainers"]
    ```
+
+## Running the documentation site
+
+Preview the MkDocs site locally:
+
+```bash
+pip install mkdocs-material
+mkdocs serve   # http://127.0.0.1:8000
+```
 
 ## Running Tests
 
