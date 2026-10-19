@@ -5,17 +5,20 @@ Thanks for your interest in contributing!
 ## Development Setup
 
 1. Clone the repository:
+
    ```bash
-   git clone https://github.com/athal7/opencode-devcontainers.git
+   git clone https://github.com/timlaing/opencode-devcontainers.git
    cd opencode-devcontainers
    ```
 
 2. Install dependencies:
+
    ```bash
    npm install
    ```
 
 3. Install the devcontainer CLI (required for devcontainer operations):
+
    ```bash
    npm install -g @devcontainers/cli
    ```
@@ -25,7 +28,7 @@ Thanks for your interest in contributing!
    # Link plugin to OpenCode plugins directory
    mkdir -p ~/.config/opencode/plugins
    ln -sf "$(pwd)/plugin" ~/.config/opencode/plugins/opencode-devcontainers
-   
+
    # Add to opencode.json
    # "plugin": ["/path/to/opencode-devcontainers/plugin"]
    ```
@@ -33,13 +36,22 @@ Thanks for your interest in contributing!
 ## Running Tests
 
 Run the full test suite:
+
 ```bash
 npm test
 ```
 
 Run tests in watch mode:
+
 ```bash
 npm run test:watch
+```
+
+Run tests with coverage (for local analysis; the `SonarQube` workflow computes
+its own coverage in CI):
+
+```bash
+npm run test:coverage
 ```
 
 ## Project Structure
@@ -76,22 +88,22 @@ opencode-devcontainers/
 Tests use Node.js built-in test runner. Example:
 
 ```javascript
-import { describe, test, beforeEach, afterEach } from 'node:test'
-import assert from 'node:assert'
+import { describe, test, beforeEach, afterEach } from "node:test";
+import assert from "node:assert";
 
-describe('myFeature', () => {
+describe("myFeature", () => {
   beforeEach(() => {
     // Setup
-  })
+  });
 
   afterEach(() => {
     // Cleanup
-  })
+  });
 
-  test('does something', () => {
-    assert.strictEqual(actual, expected)
-  })
-})
+  test("does something", () => {
+    assert.strictEqual(actual, expected);
+  });
+});
 ```
 
 ## Code Style
@@ -114,6 +126,48 @@ describe('myFeature', () => {
    - `test:` for tests
    - `chore:` for maintenance
 5. Push and open a pull request
+
+Pull request titles must also use Conventional Commits; the
+`conventional pull request title` workflow rejects anything else.
+
+## Labels and triage
+
+Issue forms set `bug` or `enhancement` and `needs-triage`. Automation adds a
+component label from the bug form. Maintainers remove `needs-triage` after
+review and can adjust labels manually. PRs receive labels from changed paths,
+conventional title prefixes (`fix:`, `feat:`, `docs:`, `ci:`, `test:`, `build:`),
+and Dependabot authorship. Automatic labels are additive and preserve manual
+labels. The labels are defined in the repository's
+[Labels settings](https://github.com/timlaing/opencode-devcontainers/labels).
+
+## Stale issues and pull requests
+
+The stale workflow marks issues with no activity for 60 days and pull requests
+with no activity for 30 days, then closes them after a further 14 days. Draft
+PRs, items with milestones, and items labeled `keep-open`, `security`, or
+`priority: high` are exempt.
+
+## Dependency updates
+
+Dependabot opens weekly grouped PRs for GitHub Actions and npm dependencies.
+CI runs `npm audit --omit=dev` on every pull request as the `npm dependency
+vulnerabilities` check. The check covers runtime dependencies only — the
+semantic-release dev tree has advisories whose sole fixes are breaking
+downgrades.
+
+## SonarQube analysis
+
+The `SonarQube` workflow runs alongside `CI` on main pushes and pull requests.
+It installs the toolchain, runs the tests with coverage itself, then scans and
+waits for the quality gate. It fails if the `SONAR_TOKEN` secret is missing.
+`sonar-project.properties` documents the same source/test layout for local
+analysis.
+
+Project: `timlaing_opencode-devcontainers`, organization: `timlaing`, service:
+`https://sonarcloud.io`. Supply Actions secret `SONAR_TOKEN` only after the Sonar
+project exists with matching visibility. Disable Sonar automatic analysis when
+using this CI workflow. The SonarQube badges in the README populate after the
+first successful scan.
 
 ## Releasing
 

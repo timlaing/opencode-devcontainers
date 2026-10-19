@@ -19,6 +19,7 @@ Thumbs.db
 # Test artifacts
 test/tmp/
 *.log
+coverage/
 
 # OpenCode session data (created if tests run without isolation)
 .opencode/

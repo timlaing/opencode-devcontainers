@@ -6,7 +6,7 @@
   "main": "plugin/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/athal7/opencode-devcontainers.git"
+    "url": "https://github.com/timlaing/opencode-devcontainers.git"
   },
   "publishConfig": {
     "provenance": true,
@@ -30,6 +30,7 @@
   "scripts": {
     "test": "node --test test/unit/*.test.js",
     "test:watch": "node --test --watch test/unit/*.test.js",
+    "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info test/unit/*.test.js",
     "semantic-release": "semantic-release"
   },
   "dependencies": {

@@ -1,0 +1,24 @@
+"area: devcontainer":
+  - changed-files:
+      - any-glob-to-any-file: ['plugin/core/devcontainer.js', 'plugin/core/docker-filter.js', 'plugin/command/devcontainer.md']
+"area: worktree":
+  - changed-files:
+      - any-glob-to-any-file: ['plugin/core/worktree.js', 'plugin/core/clones.js', 'plugin/command/worktree.md']
+"area: workspaces":
+  - changed-files:
+      - any-glob-to-any-file: ['plugin/core/workspaces.js', 'plugin/command/workspaces.md']
+"area: config":
+  - changed-files:
+      - any-glob-to-any-file: ['plugin/core/config.js', 'plugin/core/ports.js', 'plugin/core/paths.js']
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ['**/*.md', 'LICENSE']
+tests:
+  - changed-files:
+      - any-glob-to-any-file: ['test/**']
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**']
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['package.json', 'package-lock.json', '.github/dependabot.yml', 'renovate.json']

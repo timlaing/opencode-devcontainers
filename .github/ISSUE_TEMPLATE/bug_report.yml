@@ -1,0 +1,60 @@
+name: Bug report
+description: Report an OpenCode devcontainer or worktree plugin problem.
+title: '[Bug]: '
+labels: [bug, needs-triage]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Devcontainer creation or execution
+        - Worktree creation or execution
+        - Workspace listing or cleanup
+        - Port allocation or isolation
+        - Command routing or HOST: escape
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and environment
+      description: Include the repository revision, OS, OpenCode, Node, devcontainer CLI and Docker/Podman versions where relevant.
+      placeholder: 'OS: ...; OpenCode: ...; Node: ...; devcontainer CLI: ...; Docker/Podman: ...; revision: ...'
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest set of commands or actions that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and relevant error
+      description: Include a short error excerpt. For plugin loading, include its state from the OpenCode plugin API or loader log.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Sanitized configuration
+      description: Include your OpenCode plugin entry and `~/.config/opencode/devcontainers/config.json`. Replace tokens, credentials, private keys and sensitive hostnames/addresses with placeholders.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked for an existing matching issue.
+          required: true
+        - label: I removed credentials and sensitive deployment information from this report.
+          required: true
