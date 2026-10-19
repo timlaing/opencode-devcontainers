@@ -136,7 +136,8 @@ component label from the bug form. Maintainers remove `needs-triage` after
 review and can adjust labels manually. PRs receive labels from changed paths,
 conventional title prefixes (`fix:`, `feat:`, `docs:`, `ci:`, `test:`, `build:`),
 and Dependabot authorship. Automatic labels are additive and preserve manual
-labels. The label definitions are in [.github/labels.json](.github/labels.json).
+labels. The labels are defined in the repository's
+[Labels settings](https://github.com/timlaing/opencode-devcontainers/labels).
 
 ## Stale issues and pull requests
 
