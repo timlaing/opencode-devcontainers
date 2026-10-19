@@ -1,5 +1,22 @@
 # opencode-devcontainers
 
+[![CI](https://github.com/timlaing/opencode-devcontainers/actions/workflows/ci.yml/badge.svg)](https://github.com/timlaing/opencode-devcontainers/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/timlaing/opencode-devcontainers)](https://github.com/timlaing/opencode-devcontainers/releases)
+[![License](https://img.shields.io/github/license/timlaing/opencode-devcontainers)](LICENSE)
+
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=coverage)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=bugs)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
+
 OpenCode plugin for isolated branch workspaces using devcontainers or git worktrees.
 
 > **Note**: This is a community project and is not built by or affiliated with the OpenCode team.
@@ -14,6 +31,7 @@ When working on multiple branches, you need isolated development environments:
 - **Worktrees** provide lightweight filesystem isolation (same dependencies, just different code)
 
 This plugin provides both options with:
+
 - Session state management (the agent remembers your workspace)
 - Auto-assigned ports from a configurable range (13000-13099)
 - Automatic copying of gitignored secrets (.env, credentials, etc.)
@@ -48,6 +66,7 @@ OpenCode automatically installs npm plugins on startup.
 ```
 
 When a devcontainer is targeted:
+
 - Most commands run inside the container automatically
 - Git operations and file reading run on host
 - Prefix with `HOST:` to force host execution
@@ -62,6 +81,7 @@ When a devcontainer is targeted:
 ```
 
 When a worktree is targeted:
+
 - Bash commands run in the worktree directory
 - Same `HOST:` prefix for escaping
 - Gitignored files are automatically copied from main repo
@@ -75,17 +95,18 @@ When a worktree is targeted:
 
 ## When to Use What
 
-| Use Case | Recommendation |
-|----------|----------------|
-| Project has devcontainer.json | `/devcontainer` |
+| Use Case                          | Recommendation  |
+| --------------------------------- | --------------- |
+| Project has devcontainer.json     | `/devcontainer` |
 | Different dependencies per branch | `/devcontainer` |
-| Quick branch work, same deps | `/worktree` |
-| No Docker or Podman available | `/worktree` |
-| Testing migrations/databases | `/devcontainer` |
+| Quick branch work, same deps      | `/worktree`     |
+| No Docker or Podman available     | `/worktree`     |
+| Testing migrations/databases      | `/devcontainer` |
 
 ## Configuration
 
 `~/.config/opencode/devcontainers/config.json`:
+
 ```json
 {
   "portRangeStart": 13000,
@@ -100,12 +121,14 @@ When a worktree is targeted:
 ## How It Works
 
 ### Devcontainers
+
 1. Creates clone in `~/.local/share/opencode/clone/<repo>/<branch>/`
 2. Copies gitignored secrets from main repo
 3. Generates ephemeral override config with unique port
 4. Starts container via `devcontainer up`
 
 ### Worktrees
+
 1. Creates worktree in `~/.local/share/opencode/worktree/<repo>/<branch>/`
 2. Copies gitignored secrets from main repo
 3. Runs `direnv allow` if .envrc exists
@@ -153,6 +176,7 @@ When switching workspaces with `/devcontainer` or `/worktree`, OpenCode's intern
 ## Environment Variables
 
 Override default paths:
+
 - `OCDC_CONFIG_DIR` - Config directory (default: `~/.config/opencode/devcontainers`)
 - `OCDC_CACHE_DIR` - Cache directory (default: `~/.cache/opencode-devcontainers`)
 - `OCDC_CLONES_DIR` - Clones directory (default: `~/.local/share/opencode/clone`)
@@ -162,6 +186,12 @@ Override default paths:
 ## Related
 
 - [opencode-pilot](https://github.com/athal7/opencode-pilot) - Automation layer for OpenCode (notifications, mobile UI, polling)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, verification and
+release workflow. Report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

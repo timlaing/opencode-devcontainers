@@ -5,24 +5,31 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
-  contents: write
-  id-token: write  # Enable OIDC for npm trusted publishing
-  issues: write    # For semantic-release failure reporting
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
+    name: Plugin tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          cache: npm
 
       - name: Configure git for tests
         run: |
@@ -55,25 +62,49 @@ jobs:
           }
           EOF
 
-      - name: Run tests
-        run: npm test
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Record coverage revision
+        run: git rev-parse HEAD > coverage/coverage-revision.txt
+
+      - name: Upload coverage for SonarQube
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-coverage
+          path: |
+            coverage/lcov.info
+            coverage/coverage-revision.txt
+          if-no-files-found: error
+          retention-days: 7
 
   release:
+    name: Release
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # semantic-release needs to push tags, create the GitHub release and
+    # publish to npm with OIDC provenance; the test job stays read-only.
+    permissions:
+      contents: write
+      id-token: write  # Enable OIDC for npm trusted publishing
+      issues: write    # For semantic-release failure reporting
     outputs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
       new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
-      - uses: actions/checkout@v7
+      # persist-credentials stays enabled here: semantic-release pushes the
+      # release tag with the workflow token embedded in the remote URL.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          cache: npm
 
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest

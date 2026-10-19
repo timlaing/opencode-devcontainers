@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a change to the plugin or its OpenCode configuration.
+title: '[Feature]: '
+labels: [enhancement, needs-triage]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      options:
+        - Devcontainer creation or execution
+        - Worktree creation or execution
+        - Workspace listing or cleanup
+        - Port allocation or isolation
+        - Command routing or HOST: escape
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Explain the task you cannot currently complete.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Requested behavior
+      description: Describe the desired outcome and any example configuration or command.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How to verify the feature
+      description: Describe an observable result that would show the change works.

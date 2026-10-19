@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: OpenCode core issues
+    url: https://github.com/anomalyco/opencode/issues
+    about: OpenCode application bugs (such as the workspace directory context issue) belong in the OpenCode repository.
+  - name: OpenCode V2 plugin API
+    url: https://github.com/timlaing/opencode-devcontainers/issues/1
+    about: Track OpenCode V2 plugin API compatibility for this plugin here.
