@@ -150,8 +150,10 @@ PRs, items with milestones, and items labeled `keep-open`, `security`, or
 ## Dependency updates
 
 Dependabot opens weekly grouped PRs for GitHub Actions and npm dependencies.
-CI runs `npm audit` on every pull request as the `npm dependency
-vulnerabilities` check.
+CI runs `npm audit --omit=dev` on every pull request as the `npm dependency
+vulnerabilities` check. The check covers runtime dependencies only — the
+semantic-release dev tree has advisories whose sole fixes are breaking
+downgrades.
 
 ## SonarQube analysis
 

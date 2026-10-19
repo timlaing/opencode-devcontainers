@@ -36,4 +36,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm audit
+      # Scope to runtime dependencies: only @opencode-ai/plugin ships to
+      # users. The semantic-release dev tree carries advisories whose only
+      # fixes are breaking downgrades, so auditing it would leave this check
+      # permanently red.
+      - run: npm audit --omit=dev
