@@ -37,7 +37,11 @@ publishes anything. To cut a release:
    3. mirrors that version to the GitHub Packages npm registry
       (`npm.pkg.github.com`) via `scripts/publish-github-packages.mjs`
 4. Re-running the publish job is safe: both publishes skip when the version
-   is already present. Draft/prerelease releases are ignored by the job.
+   is already present. Draft/prerelease releases are ignored by the job;
+   promoting a prerelease to a stable release does publish (GitHub emits
+   the `released` event for that transition). A release whose version is
+   lower than the current `latest` is refused — backports are published
+   manually with an explicit dist-tag.
    If several releases are cut in quick succession, GitHub keeps only one
    queued publish run — a superseded run can be re-run from the Actions
    tab (both publishes are idempotent, so re-runs never duplicate).

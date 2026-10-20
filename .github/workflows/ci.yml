@@ -7,23 +7,27 @@ on:
     branches: [main]
   # Publishing is event-driven: the Publish release job below runs only when
   # a GitHub Release is published (Releases UI or `gh release create`), never
-  # on pushes to main.
+  # on pushes to main. `released` covers promoting a prerelease to stable —
+  # GitHub emits `released` (not `published`) for that transition.
   release:
-    types: [published]
+    types: [published, released]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # Never cancel in-flight runs on main: a cancelled release job could leave
-# a published package without its tag/GitHub release. PR runs still cancel.
-# The event name is part of the group because GitHub allows only one pending
-# run per group: a workflow_dispatch run on main would otherwise replace a
-# pending push run, whose release job the dispatch run then skips —
-# stranding that push's release until the next push to main.
+# a published package without its tag/GitHub release. Release-event runs are
+# also never cancelled (their ref is a tag, so the ref test alone would
+# cancel them — and a duplicate release event mid-publish could otherwise
+# kill a run between the npmjs publish and the GitHub Packages mirror).
+# PR runs still cancel. The event name is part of the group because GitHub
+# allows only one pending run per group: a workflow_dispatch run on main
+# would otherwise replace a pending push run, whose release job the dispatch
+# run then skips — stranding that push's release until the next push to main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name != 'release' && github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -85,9 +89,11 @@ jobs:
     # Event-driven, never push-driven: this job runs only when a GitHub
     # Release is published for this repository (the Releases UI or
     # `gh release create vX.Y.Z --target main`, which creates the release
-    # tag as a side effect). A push to main never publishes anything.
-    # Prereleases are skipped — stable vX.Y.Z releases are the channel.
-    if: github.event_name == 'release' && github.event.action == 'published' && !github.event.release.prerelease
+    # tag as a side effect), or when a prerelease is promoted to stable
+    # (GitHub emits `released` for that, not `published`). A push to main
+    # never publishes anything. Prereleases are skipped — stable vX.Y.Z
+    # releases are the channel.
+    if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'released') && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Serialize release publishes so `latest` can never regress when two
@@ -195,6 +201,17 @@ jobs:
           if [ "$view_rc" -eq 0 ]; then
             echo "${version} is already on npmjs; nothing to publish"
           elif printf '%s' "$view_out" | grep -qiE 'E404|404 Not Found|not in this registry|no matching version'; then
+            # Refuse to move `latest` backwards: npm itself also refuses a
+            # version lower than the current latest without an explicit
+            # --tag, but with an opaque error — state the invariant
+            # explicitly instead. A backport below the current latest must
+            # be published manually with an explicit dist-tag.
+            latest=$(npm view "@${GITHUB_REPOSITORY}" dist-tags.latest 2> /dev/null || true)
+            if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)" != "$version" ]; then
+              echo "release ${version} is lower than the current latest (${latest}); refusing to move latest backwards" >&2
+              echo "publish a backport manually with an explicit --tag if that is intended" >&2
+              exit 1
+            fi
             npm publish --provenance --access public --ignore-scripts
           else
             echo "unexpected error querying npmjs for ${version}:" >&2
