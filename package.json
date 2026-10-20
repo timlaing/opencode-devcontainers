@@ -9,7 +9,7 @@
     "url": "https://github.com/timlaing/opencode-devcontainers.git"
   },
   "publishConfig": {
-    "provenance": true,
+    "registry": "https://npm.pkg.github.com",
     "access": "public"
   },
   "keywords": [
