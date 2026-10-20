@@ -8,7 +8,7 @@
  */
 
 import { join } from 'path'
-import { mkdir, rmdir, readFile, writeFile, stat } from 'fs/promises'
+import { mkdir, rmdir, readFile, writeFile, rename, stat } from 'fs/promises'
 import { existsSync } from 'fs'
 import { createServer } from 'net'
 import childProcess from 'child_process'
@@ -80,16 +80,25 @@ export async function readPorts() {
 
 /**
  * Write ports.json file atomically
- * 
+ *
  * @param {Object} ports - Port assignments to write
  * @returns {Promise<void>}
  */
 export async function writePorts(ports) {
   const content = JSON.stringify(ports, null, 2)
-  // Write to temp file then rename for atomicity
+  // Write to a temp file in the same directory, then rename over the target.
+  // rename() swaps the path in one step, so readers always see a complete
+  // document. A plain write can interleave with a concurrent writer (both
+  // open with O_TRUNC, then write at their own offset 0) and leave a torn
+  // file combining both payloads.
   const tempPath = PATHS.ports + '.tmp'
   await writeFile(tempPath, content)
-  await writeFile(PATHS.ports, content) // rename not available, just write
+  try {
+    await rename(tempPath, PATHS.ports)
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err
+    // Directory was removed (e.g., during test cleanup) — ignore
+  }
 }
 
 
