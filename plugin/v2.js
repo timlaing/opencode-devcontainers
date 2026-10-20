@@ -38,7 +38,7 @@ export async function setup(ctx) {
       const listed = await ctx.session.list()
       const sessions = Array.isArray(listed) ? listed : listed?.data
       if (!Array.isArray(sessions)) {
-        throw new Error("unexpected session.list() shape; skipping stale-session cleanup")
+        throw new TypeError("unexpected session.list() shape; skipping stale-session cleanup")
       }
       return sessions.map((s) => s.id)
     }),

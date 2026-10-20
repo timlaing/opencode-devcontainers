@@ -109,7 +109,7 @@ export const devcontainers = async ({ client }) => {
       const listed = await client.session.list()
       const sessions = listed?.data
       if (!Array.isArray(sessions)) {
-        throw new Error("unexpected session.list() shape; skipping stale-session cleanup")
+        throw new TypeError("unexpected session.list() shape; skipping stale-session cleanup")
       }
       return sessions.map(s => s.id)
     }),
