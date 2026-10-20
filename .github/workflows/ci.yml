@@ -10,9 +10,15 @@ on:
 permissions:
   contents: read
 
+# Never cancel in-flight runs on main: a cancelled release job could leave
+# a published package without its tag/GitHub release. PR runs still cancel.
+# The event name is part of the group because GitHub allows only one pending
+# run per group: a workflow_dispatch run on main would otherwise replace a
+# pending push run, whose release job the dispatch run then skips —
+# stranding that push's release until the next push to main.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -75,47 +81,78 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # semantic-release needs to push tags, create the GitHub release and
-    # publish to npm with OIDC provenance; the test job stays read-only.
+    # semantic-release pushes tags, creates the GitHub release, publishes the
+    # canonical version to npmjs via trusted publishing (OIDC + provenance),
+    # and the follow-up step mirrors it to GitHub Packages. No npm token
+    # secret exists in this job. The test job stays read-only.
     permissions:
       contents: write
-      id-token: write  # Enable OIDC for npm trusted publishing
-      issues: write    # For semantic-release failure reporting
-    outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+      id-token: write   # OIDC for npmjs provenance attestation
+      packages: write   # Publish to the GitHub Packages npm registry
+      issues: write     # For semantic-release failure reporting
     steps:
-      # persist-credentials stays enabled here: semantic-release pushes the
-      # release tag with the workflow token embedded in the remote URL.
+      # persist-credentials is off so no token sits in .git/config while
+      # `npm ci` runs dependency lifecycle scripts; the release step points
+      # origin at GITHUB_TOKEN only after installs are done.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
+      # No registry-url here, deliberately: setup-node would write an
+      # .npmrc auth line keyed on NODE_AUTH_TOKEN, and npm skips its native
+      # OIDC (trusted publishing) exchange whenever a token auth path exists.
+      # Installs are unaffected — the lockfile pins resolved URLs on
+      # registry.npmjs.org, which is also the default registry.
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: npm
 
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
-
-      - name: Configure npm registry
-        run: npm config set registry https://registry.npmjs.org/
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1; the runner's
+      # bundled npm with Node 22 is older. Exact pin keeps the release
+      # deterministic; --ignore-scripts blocks lifecycle scripts.
+      - name: Pin npm for trusted publishing support
+        run: npm install -g npm@11.21.1 --ignore-scripts
 
       - name: Install Node.js dependencies
         run: npm ci
 
+      # Runs unmasked: a failed publish must fail the job (a previous
+      # set +e wrapper swallowed semantic-release exit code 1 and hid a
+      # broken release). npm run executes the exact devDependency version
+      # installed by `npm ci` from the lockfile — no on-demand install.
+      #
+      # Canonical publish: npmjs via trusted publishing (OIDC). No npm token
+      # exists anywhere in this workflow: id-token: write lets the npm CLI
+      # exchange a short-lived OIDC token for publish credentials, validated
+      # against the trusted publisher configured on npmjs.com for this repo
+      # and this exact workflow filename (ci.yml). Setting any NPM_TOKEN /
+      # NODE_AUTH_TOKEN here would suppress OIDC and fail the publish.
       - name: Run semantic-release
         id: semantic
+        # Re-inject push credentials now that installs are finished:
+        # semantic-release pushes the release tag through origin's URL.
         run: |
-          set +e
-          npx semantic-release
-          code=$?
-          set -e
-          if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
-            exit "$code"
-          fi
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          npm run semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+
+      # Mirror the released version to GitHub Packages. No if: gate here on
+      # purpose — the plain semantic-release CLI sets no step outputs, and
+      # its exit code cannot decide this either (it exits 0 both when a
+      # release was published and when there was nothing to release; only
+      # failures exit 1). The script decides instead: it compares the
+      # package.json version stamped by semantic-release's prepare against
+      # the committed one, and when there is no stamp it retries the latest
+      # release tag if that version is on npmjs but missing from GitHub
+      # Packages (mirror-failure recovery via job re-run). Authenticated
+      # with GITHUB_TOKEN (packages: write); no provenance, since npm
+      # allows only one provenance source per version.
+      - name: Mirror release to GitHub Packages
+        run: npm run publish:gh-packages -- --publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

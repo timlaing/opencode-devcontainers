@@ -25,15 +25,47 @@ Before committing changes, verify documentation is updated to reflect code chang
 After a PR is merged to main, semantic-release automatically:
 
 1. Creates a new version based on commit messages
-2. Publishes to npm
-3. Creates a GitHub release
+2. Publishes the canonical version to npmjs (`registry.npmjs.org`), with
+   provenance
+3. Mirrors that version to the GitHub Packages npm registry
+   (`npm.pkg.github.com`) via `scripts/publish-github-packages.mjs`
+4. Creates a GitHub release
+
+The npmjs publish uses **trusted publishing (OIDC)** — no npm token secret
+exists in the repo. `id-token: write` lets the npm CLI exchange a
+short-lived OIDC token for publish credentials; npm validates it against
+the trusted publisher configured on npmjs.com. The GitHub Packages mirror
+uses the job's own `GITHUB_TOKEN` (`packages: write`), also no secret.
+
+Trusted publisher (configured once on npmjs.com → the package → Settings →
+Trusted publishing → GitHub Actions, or via `npm trust github`):
+
+| Field                | Value                                         |
+| -------------------- | --------------------------------------------- |
+| Organization or user | `timlaing`                                    |
+| Repository           | `opencode-devcontainers`                      |
+| Workflow filename    | `ci.yml`                                      |
+| Environment name     | _(leave blank — the job sets no environment)_ |
+
+Two gotchas: the workflow filename must match exactly (`ci.yml`, not the
+full path), and a trusted-publisher config must complete its **first
+publish within 2 days** of being created or it expires and must be
+re-created. Trusted publishing also cannot create a package's first-ever
+version unless the pending/first config is in place — so create the config
+_before_ the first release, not after.
 
 ### Verify Release
 
 ```bash
 gh release list -R timlaing/opencode-devcontainers -L 1
-npm view opencode-devcontainers version
+npm view @timlaing/opencode-devcontainers version   # npmjs (canonical)
+npm view @timlaing/opencode-devcontainers version --registry https://npm.pkg.github.com
 ```
+
+The npmjs lookup needs no token (public reads are open). GitHub Packages
+requires authentication even for reads of public packages; add
+`//npm.pkg.github.com/:_authToken=$NODE_AUTH_TOKEN` to `~/.npmrc` and
+export a token with `read:packages`, or that `npm view` call fails.
 
 ### Upgrade
 
@@ -43,7 +75,7 @@ To force a specific version:
 
 ```json
 {
-  "plugin": ["opencode-devcontainers@1.0.0"]
+  "plugin": ["@timlaing/opencode-devcontainers@1.0.0"]
 }
 ```
 
