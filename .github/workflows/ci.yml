@@ -90,6 +90,12 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'published' && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Serialize release publishes so `latest` can never regress when two
+    # releases are cut close together: without this, an older release's
+    # publish finishing last would win the `latest` dist-tag.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write   # OIDC for npmjs trusted publishing (and provenance)
@@ -98,6 +104,20 @@ jobs:
       # On release events actions/checkout defaults to the release tag, so
       # the published artifact matches the tagged commit exactly.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the next step can compare the tag against
+          # origin/main.
+          fetch-depth: 0
+
+      # Releases are cut from main (`gh release create ... --target main`);
+      # refuse a tag that points outside main's history so unmerged code can
+      # never reach either registry.
+      - name: Verify the release tag points into main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release tag $GITHUB_REF_NAME ($GITHUB_SHA) is not reachable from origin/main; refusing to publish unmerged code" >&2
+            exit 1
+          fi
 
       # No registry-url here, deliberately: setup-node would write an
       # .npmrc auth line keyed on NODE_AUTH_TOKEN, and npm skips its native
@@ -119,17 +139,24 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
+      # The release event is independent of the push run's test job, so this
+      # job verifies the tagged tree passes its own suite before anything is
+      # published.
+      - name: Run tests
+        run: npm test
+
       # package.json commits a placeholder version; the release tag is the
       # source of truth for what to publish. Stamp the released version into
-      # this checkout (never committed) so both publishes carry it, and
-      # refuse non-stable tags — only vX.Y.Z releases publish.
+      # this checkout (never committed) so both publishes carry it. Only
+      # stable vX.Y.Z tags (with the v prefix, as the docs prescribe) are
+      # released — anything else fails loudly here.
       - name: Stamp the released version from the tag
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "release tag '$GITHUB_REF_NAME' is not a stable vX.Y.Z tag; refusing to publish" >&2
             exit 1
           fi
+          version="${GITHUB_REF_NAME#v}"
           npm pkg set version="$version"
           echo "Publishing ${GITHUB_REPOSITORY}@${version}"
 
@@ -140,19 +167,33 @@ jobs:
       # configured on npmjs.com for this repo and this exact workflow
       # filename (ci.yml). Any NPM_TOKEN / NODE_AUTH_TOKEN env here would
       # suppress OIDC and fail the publish. Idempotent: re-running this job
-      # finds the version already on npmjs and skips instead of failing.
+      # finds the version already on npmjs and skips — but only a
+      # definitive "not found" falls through to publishing; any other
+      # registry query error fails the job loudly instead of being misread
+      # as "absent".
       - name: Publish to npmjs (canonical)
         run: |
           version="${GITHUB_REF_NAME#v}"
-          if npm view "@${GITHUB_REPOSITORY}@${version}" version > /dev/null 2>&1; then
+          set +e
+          view_out=$(npm view "@${GITHUB_REPOSITORY}@${version}" version 2>&1)
+          view_rc=$?
+          set -e
+          if [ "$view_rc" -eq 0 ]; then
             echo "${version} is already on npmjs; nothing to publish"
-          else
+          elif printf '%s' "$view_out" | grep -qiE 'E404|404 Not Found|not in this registry|no matching version'; then
             npm publish --provenance --access public
+          else
+            echo "unexpected error querying npmjs for ${version}:" >&2
+            printf '%s\n' "$view_out" >&2
+            exit 1
           fi
 
       # Mirror the same version to GitHub Packages with the job's own
       # GITHUB_TOKEN (packages: write) — no provenance, since npm allows
-      # only one provenance source per version. The script skips cleanly
+      # only one provenance source per version. RELEASE_TAG tells the
+      # script which release is being mirrored (authoritative over its
+      # version-equality heuristic, which is ambiguous when the released
+      # version equals the committed placeholder). The script skips cleanly
       # when the version is already mirrored (re-run idempotency) and fails
       # loudly when no token is present.
       - name: Mirror to GitHub Packages
@@ -160,3 +201,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}

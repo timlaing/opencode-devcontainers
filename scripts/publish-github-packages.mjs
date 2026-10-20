@@ -143,10 +143,16 @@ function main() {
   // the working version equals the committed placeholder. So a working
   // version different from the committed one means "the publish job just
   // stamped the version to mirror", and equality means "no stamp" — handled
-  // below by the release-tag fallback.
+  // below by the release-tag fallback. The job also exports RELEASE_TAG,
+  // which is authoritative when present (it removes the equality
+  // ambiguity), and the stamped version must match it.
   const committed = JSON.parse(
     execFileSync('git', ['show', 'HEAD:package.json'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   )
+  const releaseTag = process.env.RELEASE_TAG
+  if (releaseTag && version !== releaseTag.replace(/^v/, '')) {
+    throw new Error(`working package.json version ${version} does not match release tag ${releaseTag}; refusing to mirror`)
+  }
 
   // A real publish needs a token; an empty/absent one would otherwise fail
   // deep inside npm with an opaque auth error.
@@ -169,15 +175,19 @@ function main() {
     // before the setting name is required as much as the trailing slash.
     writeFileSync(userconfig, `${GH_HOST}:_authToken = \${NODE_AUTH_TOKEN}\n`)
 
-    if (committed.version !== version) {
-      // Stamped path: this run just released `version` from this checkout.
-      // Without a token the duplicate check cannot run (GitHub Packages
-      // refuses anonymous reads); that only happens in a dry run, which
-      // publishes nothing, so skipping the guard is safe. `--publish` runs
-      // already threw above when no token was resolved. An already-mirrored
-      // version means a previous run of this job succeeded — registry
-      // versions are immutable, so the mirror invariant holds; skip with a
-      // log so re-running the job is safe.
+    if (committed.version !== version || releaseTag) {
+      // Stamped path: the publish job stamped the release version into this
+      // checkout before running. RELEASE_TAG (exported by that job) is
+      // authoritative over the version-equality heuristic, which is
+      // ambiguous when the released version happens to equal the committed
+      // placeholder — verify the stamp matches the release tag before
+      // trusting it. Without a token the duplicate check cannot run (GitHub
+      // Packages refuses anonymous reads); that only happens in a dry run,
+      // which publishes nothing, so skipping the guard is safe. `--publish`
+      // runs already threw above when no token was resolved. An
+      // already-mirrored version means a previous run of this job succeeded
+      // — registry versions are immutable, so the mirror invariant holds;
+      // skip with a log so re-running the job is safe.
       if (token && alreadyPublished(name, version, userconfig, token)) {
         console.log(`[publish-github-packages] ${version} already on ${GH_PACKAGES_REGISTRY}; nothing to mirror`)
         return
