@@ -1,9 +1,42 @@
 # Installation
 
-The package is published on npm as
-[`@timlaing/opencode-devcontainers`](https://www.npmjs.com/package/@timlaing/opencode-devcontainers).
-OpenCode installs npm plugins automatically when they appear in your
-configuration.
+The package is published on
+[GitHub Packages](https://github.com/timlaing/opencode-devcontainers/pkgs)
+as `@timlaing/opencode-devcontainers` (not on npmjs.com). OpenCode
+installs npm plugins automatically when they appear in your
+configuration, but npm/bun must be able to resolve the `@timlaing`
+scope to the GitHub Packages registry first — see
+[Registry setup](#registry-setup-github-packages).
+
+## Registry setup (GitHub Packages)
+
+GitHub Packages requires authentication for every registry operation,
+even for public packages. Point the `@timlaing` scope at the GitHub
+Packages npm registry in an `.npmrc` — per project (next to where you
+run OpenCode) or globally in `~/.npmrc`:
+
+```ini
+@timlaing:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+Then export a token with `read:packages` (a classic PAT with the
+`read:packages` scope, or a fine-grained PAT with read access to
+Packages):
+
+```sh
+export NODE_AUTH_TOKEN=github_pat_...
+```
+
+If your OpenCode install uses a package manager that ignores `.npmrc`
+scope mappings, install the plugin from git instead — no registry auth
+needed:
+
+```jsonc
+{
+  "plugins": ["github:timlaing/opencode-devcontainers"],
+}
+```
 
 ## OpenCode V2
 
@@ -59,9 +92,10 @@ V1-only release:
 ```
 
 !!! note "Package rename"
-    `opencode-devcontainers@0.5.1` and earlier were published under the
-    unscoped name by the original author. This fork publishes under the
-    `@timlaing` scope.
+`opencode-devcontainers@0.5.1` and earlier were published on npmjs under
+the unscoped name by the original author (that registry needs no scope
+mapping). This fork publishes under the `@timlaing` scope on GitHub
+Packages.
 
 ## Dependencies
 

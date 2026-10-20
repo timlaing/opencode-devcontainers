@@ -69,8 +69,12 @@ Add to your `opencode.json(c)`:
 }
 ```
 
-OpenCode automatically installs npm plugins on startup. Full instructions
-(including the V1 < 1.18.29 pin) are in the
+OpenCode automatically installs npm plugins on startup. The package is
+published on [GitHub Packages](https://github.com/timlaing/opencode-devcontainers/pkgs),
+so your npm/bun config must map the `@timlaing` scope to
+`https://npm.pkg.github.com` (with a `read:packages` token) before
+OpenCode can install it. Full instructions (including the git-based
+install and the V1 < 1.18.29 pin) are in the
 [installation guide](https://timlaing.github.io/opencode-devcontainers/installation/).
 
 ### Dependencies

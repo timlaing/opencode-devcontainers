@@ -25,15 +25,20 @@ Before committing changes, verify documentation is updated to reflect code chang
 After a PR is merged to main, semantic-release automatically:
 
 1. Creates a new version based on commit messages
-2. Publishes to npm
+2. Publishes to the GitHub Packages npm registry (`npm.pkg.github.com`)
 3. Creates a GitHub release
 
 ### Verify Release
 
 ```bash
 gh release list -R timlaing/opencode-devcontainers -L 1
-npm view opencode-devcontainers version
+npm view @timlaing/opencode-devcontainers version --registry https://npm.pkg.github.com
 ```
+
+GitHub Packages requires authentication even for reads of public
+packages; add `//npm.pkg.github.com/:_authToken=$NODE_AUTH_TOKEN` to
+`~/.npmrc` and export a token with `read:packages`, or the `npm view`
+call fails.
 
 ### Upgrade
 
@@ -43,7 +48,7 @@ To force a specific version:
 
 ```json
 {
-  "plugin": ["opencode-devcontainers@1.0.0"]
+  "plugin": ["@timlaing/opencode-devcontainers@1.0.0"]
 }
 ```
 
