@@ -6,7 +6,7 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
@@ -22,8 +22,12 @@ import {
   saveSession,
   deleteSession,
   resolveWorkspace,
+  resolveWorktreeWorkspace,
   shouldRunOnHost,
   shellQuote,
+  isInside,
+  invalidateSessionCache,
+  saveSessionIfCurrent,
 } from '../../plugin/helpers.js'
 
 // Test directory setup
@@ -39,11 +43,13 @@ beforeEach(() => {
   process.env.OCDC_CACHE_DIR = join(testDir, 'cache')
   process.env.OCDC_CLONES_DIR = join(testDir, 'clones')
   process.env.OCDC_SESSIONS_DIR = join(testDir, 'sessions')
+  process.env.OCDC_WORKTREES_DIR = join(testDir, 'worktrees')
   
   mkdirSync(process.env.HOME, { recursive: true })
   mkdirSync(process.env.OCDC_CACHE_DIR, { recursive: true })
   mkdirSync(process.env.OCDC_CLONES_DIR, { recursive: true })
   mkdirSync(process.env.OCDC_SESSIONS_DIR, { recursive: true })
+  mkdirSync(process.env.OCDC_WORKTREES_DIR, { recursive: true })
 })
 
 afterEach(() => {
@@ -231,6 +237,130 @@ describe('resolveWorkspace', () => {
     const result = resolveWorkspace('shared-branch')
     assert.strictEqual(result.ambiguous, true)
     assert.strictEqual(result.matches.length, 2)
+  })
+
+  test('rejects traversal that escapes the clones directory', () => {
+    // An existing directory outside the clones dir, reachable via '..'
+    const outside = join(process.env.OCDC_CLONES_DIR, '..', 'secret')
+    mkdirSync(outside, { recursive: true })
+
+    assert.strictEqual(
+      resolveWorkspace('repo/../../secret'), null,
+      'repo/branch traversal must not resolve outside the clones dir'
+    )
+    assert.strictEqual(
+      resolveWorkspace('../secret'), null,
+      'repo traversal must not resolve outside the clones dir'
+    )
+  })
+
+  test('rejects a branch that resolves to the clones directory itself', () => {
+    assert.strictEqual(resolveWorkspace('..'), null)
+  })
+
+  test('rejects targets whose repo or branch contains dot segments', () => {
+    // 'repo/../other' stays inside the clones dir after normalization, but
+    // the unnormalized repo/branch pair handed to removeClone() would delete
+    // a different repo's clones entirely
+    mkdirSync(join(process.env.OCDC_CLONES_DIR, 'other'), { recursive: true })
+
+    assert.strictEqual(resolveWorkspace('repo/../other'), null)
+    assert.strictEqual(resolveWorktreeWorkspace('repo/../other'), null)
+    assert.strictEqual(resolveWorkspace('myrepo/./branch'), null)
+  })
+})
+
+describe('resolveWorktreeWorkspace', () => {
+  test('rejects traversal that escapes the worktrees directory', () => {
+    const outside = join(process.env.OCDC_WORKTREES_DIR, '..', 'wt-secret')
+    mkdirSync(outside, { recursive: true })
+
+    assert.strictEqual(
+      resolveWorktreeWorkspace('repo/../../wt-secret'), null,
+      'repo/branch traversal must not resolve outside the worktrees dir'
+    )
+    assert.strictEqual(
+      resolveWorktreeWorkspace('../wt-secret'), null,
+      'repo traversal must not resolve outside the worktrees dir'
+    )
+  })
+})
+
+describe('isInside', () => {
+  test('accepts paths strictly inside the parent', () => {
+    assert.ok(isInside('/a/b', '/a/b/c'))
+    assert.ok(isInside('/a/b', '/a/b/c/d'))
+  })
+
+  test('rejects the parent itself, prefix siblings, and traversal out', () => {
+    assert.ok(!isInside('/a/b', '/a/b'), 'parent itself is not inside')
+    assert.ok(!isInside('/ws', '/ws-sibling'), 'sibling sharing a prefix')
+    assert.ok(!isInside('/a/b', '/a'), 'parent is not inside')
+    assert.ok(!isInside('/a/b', '/a/b/../c'), 'traversal resolving outside')
+    assert.ok(!isInside('/a/b', '/x/y'), 'unrelated path')
+  })
+})
+
+describe('invalidateSessionCache', () => {
+  test('drops cached sessions for the removed workspace only', () => {
+    const stamp = Date.now()
+    const removed = `sess-inv-a-${stamp}`
+    const kept = `sess-inv-b-${stamp}`
+    saveSession(removed, { workspace: '/ws/a' })
+    saveSession(kept, { workspace: '/ws/b' })
+    // Prime the cache, then delete the file behind it (as core cleanup does)
+    assert.ok(loadSession(removed))
+    assert.ok(loadSession(kept))
+    rmSync(join(getSessionsDir(), `${removed}.json`))
+
+    invalidateSessionCache('/ws/a')
+
+    assert.strictEqual(loadSession(removed), null, 'cached state dropped with the files')
+    assert.ok(loadSession(kept), 'unrelated sessions unaffected')
+  })
+})
+
+describe('saveSessionIfCurrent', () => {
+  test('saves when the session is unchanged since the baseline', () => {
+    const id = `ssc-ok-${Date.now()}`
+    saveSession(id, { workspace: '/ws/old' })
+    const baseline = loadSession(id)
+
+    assert.strictEqual(saveSessionIfCurrent(id, baseline, { workspace: '/ws/new' }), true)
+    assert.strictEqual(loadSession(id).workspace, '/ws/new')
+  })
+
+  test('does not overwrite when another save landed meanwhile', () => {
+    const id = `ssc-stale-${Date.now()}`
+    saveSession(id, { workspace: '/ws/old' })
+    const baseline = loadSession(id)
+    // A concurrent operation saves — possibly within the same millisecond
+    saveSession(id, { workspace: '/ws/newer' })
+
+    assert.strictEqual(saveSessionIfCurrent(id, baseline, { workspace: '/ws/stale' }), false)
+    assert.strictEqual(loadSession(id).workspace, '/ws/newer', 'newer save preserved')
+  })
+
+  test('does not recreate a session deleted meanwhile', () => {
+    const id = `ssc-off-${Date.now()}`
+    saveSession(id, { workspace: '/ws/old' })
+    const baseline = loadSession(id)
+    deleteSession(id)
+
+    assert.strictEqual(saveSessionIfCurrent(id, baseline, { workspace: '/ws/stale' }), false)
+    assert.strictEqual(loadSession(id), null)
+  })
+
+  test('never persists the cache-only change marker to disk', () => {
+    const id = `ssc-nopersist-${Date.now()}`
+    saveSession(id, { workspace: '/ws/a', starting: true })
+    // Callers pass cached objects back in (e.g. { ...session, starting: false })
+    const cached = loadSession(id)
+    saveSession(id, { ...cached, starting: false })
+
+    const raw = JSON.parse(readFileSync(join(getSessionsDir(), `${id}.json`), 'utf-8'))
+    assert.ok(!('_seq' in raw), '_seq must not be written to disk')
+    assert.strictEqual(raw.starting, false)
   })
 })
 

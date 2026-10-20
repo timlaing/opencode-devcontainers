@@ -1,7 +1,7 @@
 {
-  "name": "opencode-devcontainers",
+  "name": "@timlaing/opencode-devcontainers",
   "version": "0.4.0",
-  "description": "OpenCode plugin for isolated branch workspaces using devcontainers or git worktrees",
+  "description": "OpenCode plugin for isolated branch workspaces using devcontainers (V1 also supports git worktrees)",
   "type": "module",
   "main": "plugin/index.js",
   "repository": {
@@ -30,11 +30,13 @@
   "scripts": {
     "test": "node --test test/unit/*.test.js",
     "test:watch": "node --test --watch test/unit/*.test.js",
+    "e2e:v2": "node scripts/e2e-v2.mjs",
     "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info test/unit/*.test.js",
     "semantic-release": "semantic-release"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.0.0"
+    "@opencode-ai/plugin": "^1.0.0",
+    "@opencode/plugin": "^2.0.30"
   },
   "devDependencies": {
     "@semantic-release/exec": "^7.1.0",

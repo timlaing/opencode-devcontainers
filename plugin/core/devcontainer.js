@@ -17,7 +17,7 @@ import { allocatePort, releasePort, readPorts, getContainerPort, updatePortAlloc
 import { generateOverrideConfig, getOverridePath, loadUserConfig } from './config.js'
 import { createClone, getClonePath, removeClone } from './clones.js'
 import { getCurrentBranch, getRepoRoot } from './git.js'
-import { startJob, updateJob, JOB_STATUS, removeJob } from './jobs.js'
+import { startJob, updateJob, JOB_STATUS, removeJob, getJob } from './jobs.js'
 import { sanitizeDockerFilterValue } from './docker-filter.js'
 
 /**
@@ -276,14 +276,78 @@ export async function up(workspaceOrBranch, options = {}) {
   }
 }
 
+// Workspaces with a background start currently in flight, so a duplicate
+// target reuses the running job instead of racing a second clone/start
+const inflightStarts = new Set()
+
+/**
+ * Resolve the workspace path, repo name, and branch for a background start.
+ *
+ * @param {string} workspaceOrBranch - Workspace path or branch name
+ * @param {object} options
+ * @param {string} [options.cwd] - Working directory (for branch resolution)
+ * @returns {Promise<{workspace: string, repoName: string, branch: string}>}
+ */
+async function resolveStartTarget(workspaceOrBranch, options) {
+  // Check if it's a branch name (not an absolute path)
+  if (workspaceOrBranch.startsWith('/')) {
+    // It's a workspace path
+    return {
+      workspace: workspaceOrBranch,
+      repoName: basename(workspaceOrBranch),
+      branch: await getCurrentBranch(workspaceOrBranch) || 'unknown',
+    }
+  }
+
+  // It's a branch name - need to resolve workspace
+  const cwd = options.cwd || process.cwd()
+  const repoRoot = await getRepoRoot(cwd)
+
+  if (!repoRoot) {
+    throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
+  }
+
+  // For background start, we do quick validation only
+  // The actual clone will happen in the background job — use its
+  // expected path whether or not the clone exists yet
+  const repoName = basename(repoRoot)
+  return {
+    workspace: getClonePath(repoName, workspaceOrBranch),
+    repoName,
+    branch: workspaceOrBranch,
+  }
+}
+
+/**
+ * Quick devcontainer.json check for a background start. Skipped when the
+ * workspace does not exist yet (branch names whose clone is still pending).
+ *
+ * @param {string} workspace - Workspace path
+ */
+function assertDevcontainerJson(workspace) {
+  if (!existsSync(workspace)) return
+
+  const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
+    ? `${workspace}/.devcontainer/devcontainer.json`
+    : existsSync(`${workspace}/.devcontainer.json`)
+      ? `${workspace}/.devcontainer.json`
+      : null
+
+  if (!devcontainerPath) {
+    throw new Error(`No devcontainer.json found in ${workspace}`)
+  }
+}
+
 /**
  * Start a devcontainer in the background (non-blocking)
- * 
+ *
  * This function returns immediately after validating the workspace and
  * creating a job entry. The actual container start happens in the background.
- * 
+ * A duplicate call for a workspace with a start already in flight reuses
+ * that job instead of racing a second clone/start.
+ *
  * Use getJob() to check the status of the background operation.
- * 
+ *
  * @param {string} workspaceOrBranch - Workspace path or branch name
  * @param {object} [options]
  * @param {boolean} [options.removeExisting] - Remove existing container
@@ -293,61 +357,30 @@ export async function up(workspaceOrBranch, options = {}) {
 export async function upBackground(workspaceOrBranch, options = {}) {
   await ensureDirs()
 
-  let workspace = workspaceOrBranch
-  let repoName
-  let branch
-
-  // Check if it's a branch name (not an absolute path)
-  if (!workspaceOrBranch.startsWith('/')) {
-    // It's a branch name - need to resolve workspace
-    const cwd = options.cwd || process.cwd()
-    const repoRoot = await getRepoRoot(cwd)
-    
-    if (!repoRoot) {
-      throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
-    }
-
-    // For background start, we do quick validation only
-    // The actual clone will happen in the background job
-    repoName = basename(repoRoot)
-    branch = workspaceOrBranch
-    
-    // Check if clone already exists
-    const clonePath = getClonePath(repoName, branch)
-    if (existsSync(clonePath)) {
-      workspace = clonePath
-    } else {
-      // Clone doesn't exist yet - will be created in background
-      // For now, use the expected path
-      workspace = clonePath
-    }
-  } else {
-    // It's a workspace path
-    workspace = workspaceOrBranch
-    repoName = basename(workspace)
-    branch = await getCurrentBranch(workspace) || 'unknown'
-  }
+  const { workspace, repoName, branch } = await resolveStartTarget(workspaceOrBranch, options)
 
   // Validate devcontainer.json exists (quick check)
-  // For branch names where workspace doesn't exist yet, skip this check
-  if (existsSync(workspace)) {
-    const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
-      ? `${workspace}/.devcontainer/devcontainer.json`
-      : existsSync(`${workspace}/.devcontainer.json`)
-        ? `${workspace}/.devcontainer.json`
-        : null
+  assertDevcontainerJson(workspace)
 
-    if (!devcontainerPath) {
-      throw new Error(`No devcontainer.json found in ${workspace}`)
-    }
+  // Reuse an in-flight start for this workspace instead of racing a second
+  // clone/start over the same job record. has+add run synchronously, so two
+  // concurrent calls cannot both pass the check.
+  if (inflightStarts.has(workspace)) {
+    return { workspace, repo: repoName, branch }
   }
+  inflightStarts.add(workspace)
 
-  // Create job entry with pending status
-  await startJob(workspace, repoName, branch)
+  try {
+    // Create job entry with pending status
+    await startJob(workspace, repoName, branch)
 
-  // Start the actual up() in the background (fire-and-forget)
-  // The job status will be updated as it progresses
-  runUpInBackground(workspaceOrBranch, workspace, options)
+    // Start the actual up() in the background (fire-and-forget)
+    // The job status will be updated as it progresses
+    runUpInBackground(workspaceOrBranch, workspace, repoName, branch, options)
+  } catch (err) {
+    inflightStarts.delete(workspace)
+    throw err
+  }
 
   return {
     workspace,
@@ -362,9 +395,11 @@ export async function upBackground(workspaceOrBranch, options = {}) {
  * 
  * @param {string} workspaceOrBranch - Original input (branch or path)
  * @param {string} workspace - Resolved workspace path
+ * @param {string} repoName - Repository name (for undo teardown)
+ * @param {string} branch - Branch name (for undo teardown)
  * @param {object} options - Options to pass to up()
  */
-function runUpInBackground(workspaceOrBranch, workspace, options) {
+function runUpInBackground(workspaceOrBranch, workspace, repoName, branch, options) {
   // Run async but don't await - this is intentionally fire-and-forget
   (async () => {
     try {
@@ -377,17 +412,48 @@ function runUpInBackground(workspaceOrBranch, workspace, options) {
         noOpen: true,
       })
       
+      // If the workspace was removed while the start was in flight, tear
+      // down whatever the start created instead of leaving untracked
+      // resources behind (the removal reported success before we finished)
+      if (!(await getJob(workspace))) {
+        await undoRemovedStart(workspace, repoName, branch)
+        return
+      }
+      
       // Update job to completed with port info
       await updateJob(workspace, JOB_STATUS.COMPLETED, {
         port: result.port,
       })
     } catch (err) {
+      if (!(await getJob(workspace))) {
+        await undoRemovedStart(workspace, repoName, branch)
+        return
+      }
       // Update job to failed with error message
       await updateJob(workspace, JOB_STATUS.FAILED, {
         error: err.message,
       })
+    } finally {
+      inflightStarts.delete(workspace)
     }
   })()
+}
+
+/**
+ * Best-effort teardown when a workspace was removed while its start was
+ * still in flight.
+ *
+ * @param {string} workspace - Workspace path
+ * @param {string} repoName - Repository name
+ * @param {string} branch - Branch name
+ * @returns {Promise<void>}
+ */
+async function undoRemovedStart(workspace, repoName, branch) {
+  try {
+    await remove(workspace, repoName, branch)
+  } catch {
+    // Best-effort: the original removal already reported its own outcome
+  }
 }
 
 /**

@@ -1,6 +1,7 @@
 # opencode-devcontainers
 
 [![CI](https://github.com/timlaing/opencode-devcontainers/actions/workflows/ci.yml/badge.svg)](https://github.com/timlaing/opencode-devcontainers/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://timlaing.github.io/opencode-devcontainers/)
 [![Release](https://img.shields.io/github/v/tag/timlaing/opencode-devcontainers)](https://github.com/timlaing/opencode-devcontainers/releases)
 [![License](https://img.shields.io/github/license/timlaing/opencode-devcontainers)](LICENSE)
 
@@ -17,11 +18,24 @@
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=bugs)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
 [![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=timlaing_opencode-devcontainers&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=timlaing_opencode-devcontainers)
 
-OpenCode plugin for isolated branch workspaces using devcontainers or git worktrees.
+OpenCode plugin for isolated branch workspaces using devcontainers (OpenCode V1
+also supports git worktrees).
+
+**Full documentation: [timlaing.github.io/opencode-devcontainers](https://timlaing.github.io/opencode-devcontainers/)**
 
 > **Note**: This is a community project and is not built by or affiliated with the OpenCode team.
 
-> **Version 0.x** - Pre-1.0 software. Minor versions may contain breaking changes.
+## OpenCode V2 support
+
+This fork supports both OpenCode plugin APIs from one package:
+
+| OpenCode     | Config                                            | Devcontainers | Worktrees         |
+| ------------ | ------------------------------------------------- | ------------- | ----------------- |
+| V2 (2.x)     | `"plugins": ["@timlaing/opencode-devcontainers"]` | ✅            | Native V2 support |
+| V1 ≥ 1.18.29 | `"plugin": ["@timlaing/opencode-devcontainers"]`  | ✅            | ✅ `/worktree`    |
+| V1 < 1.18.29 | `"plugin": ["opencode-devcontainers@0.5.1"]`      | ✅            | ✅                |
+
+See [Migrating to OpenCode V2](https://timlaing.github.io/opencode-devcontainers/migration/) for details.
 
 ## Why?
 
@@ -39,15 +53,25 @@ This plugin provides both options with:
 
 ## Installation
 
-Add to your `~/.config/opencode/opencode.json`:
+Add to your `opencode.json(c)`:
 
-```json
+```jsonc
+// OpenCode V2
 {
-  "plugin": ["opencode-devcontainers"]
+  "plugins": ["@timlaing/opencode-devcontainers"],
 }
 ```
 
-OpenCode automatically installs npm plugins on startup.
+```jsonc
+// OpenCode V1 (>= 1.18.29)
+{
+  "plugin": ["@timlaing/opencode-devcontainers"],
+}
+```
+
+OpenCode automatically installs npm plugins on startup. Full instructions
+(including the V1 < 1.18.29 pin) are in the
+[installation guide](https://timlaing.github.io/opencode-devcontainers/installation/).
 
 ### Dependencies
 
@@ -72,6 +96,9 @@ When a devcontainer is targeted:
 - Prefix with `HOST:` to force host execution
 
 ### Worktrees (Lightweight Filesystem Isolation)
+
+> OpenCode V1 only — V2 supports worktrees natively; the `/worktree` and
+> `/workspaces` commands are not registered under V2.
 
 ```
 /worktree feature-x        # Create/target a worktree for this branch

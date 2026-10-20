@@ -1,11 +1,25 @@
 import { 
   readFileSync, writeFileSync, mkdirSync, existsSync, 
   readdirSync, unlinkSync, statSync 
-} from "fs"
-import { join, basename } from "path"
-import { execSync } from "child_process"
+} from "node:fs"
+import { join, basename, relative, isAbsolute, sep } from "node:path"
+import { execSync } from "node:child_process"
 
 // ============ Utility Functions ============
+
+/**
+ * Check that a path is strictly inside a parent directory.
+ * Boundary-aware: '/ws' does not contain '/ws-sibling', and '..' segments
+ * that resolve outside the parent are rejected.
+ *
+ * @param {string} parentDir - Containing directory (absolute)
+ * @param {string} childPath - Path to test (absolute)
+ * @returns {boolean}
+ */
+export function isInside(parentDir, childPath) {
+  const rel = relative(parentDir, childPath)
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
 
 /**
  * Wraps a promise with a timeout. If the promise doesn't resolve within
@@ -32,23 +46,43 @@ export async function runWithTimeout(fn, ms) {
 }
 
 // Directory getters - respect environment variables
+/**
+ * Resolve the cache directory, honoring the OCDC_CACHE_DIR override.
+ *
+ * @returns {string} Absolute path to the plugin cache directory
+ */
 export function getCacheDir() {
   return process.env.OCDC_CACHE_DIR || 
     join(process.env.HOME, ".cache/opencode-devcontainers")
 }
 
+/**
+ * Resolve the session-state directory, honoring OCDC_SESSIONS_DIR.
+ *
+ * @returns {string} Absolute path to the sessions directory
+ */
 export function getSessionsDir() {
   return process.env.OCDC_SESSIONS_DIR || 
     join(getCacheDir(), "opencode-sessions")
 }
 
-// Clones live alongside opencode desktop worktrees for discoverability
+/**
+ * Resolve the clones directory, honoring OCDC_CLONES_DIR. Clones live
+ * alongside opencode desktop worktrees for discoverability.
+ *
+ * @returns {string} Absolute path to the clones directory
+ */
 export function getClonesDir() {
   return process.env.OCDC_CLONES_DIR ||
     join(process.env.HOME, ".local/share/opencode/clone")
 }
 
 // Worktrees directory for non-devcontainer branch isolation
+/**
+ * Resolve the worktrees directory, honoring OCDC_WORKTREES_DIR.
+ *
+ * @returns {string} Absolute path to the worktrees directory
+ */
 export function getWorktreesDir() {
   return process.env.OCDC_WORKTREES_DIR ||
     join(process.env.HOME, ".local/share/opencode/worktree")
@@ -82,11 +116,27 @@ export const HOST_COMMANDS = [
 
 // In-memory cache to avoid repeated file reads on every bash command
 const sessionCache = new Map()
+// In-process save counter; attached to cached session objects only (never
+// persisted) so saveSessionIfCurrent can detect a save that landed in the
+// same millisecond as the baseline it was given
+let sessionSaveSeq = 0
 
+/**
+ * Build the on-disk path for a session's state file.
+ *
+ * @param {string} sessionID - Session identifier
+ * @returns {string} Absolute path to the session JSON file
+ */
 function getSessionFile(sessionID) {
   return join(getSessionsDir(), `${sessionID}.json`)
 }
 
+/**
+ * Load a session's state, preferring the in-process cache over disk.
+ *
+ * @param {string} sessionID - Session identifier
+ * @returns {object|null} Session state, or null when absent/corrupt
+ */
 export function loadSession(sessionID) {
   // Check cache first
   if (sessionCache.has(sessionID)) {
@@ -104,18 +154,35 @@ export function loadSession(sessionID) {
   }
 }
 
+/**
+ * Persist a session's state and refresh the in-process cache. The
+ * cache-only change marker is stripped before writing so it never
+ * reaches disk.
+ *
+ * @param {string} sessionID - Session identifier
+ * @param {object} state - Session state to persist (activatedAt is set)
+ */
 export function saveSession(sessionID, state) {
   const sessionsDir = getSessionsDir()
   mkdirSync(sessionsDir, { recursive: true })
+  // Strip the cache-only change marker: callers pass cached objects back in
+  // (e.g. { ...session, starting: false }), which would otherwise persist it
+  const clean = { ...state }
+  delete clean._seq
   const session = {
-    ...state,
+    ...clean,
     activatedAt: new Date().toISOString()
   }
   writeFileSync(getSessionFile(sessionID), JSON.stringify(session, null, 2))
-  // Update cache
-  sessionCache.set(sessionID, session)
+  // Update cache with the change marker (cache-only; the file stays clean)
+  sessionCache.set(sessionID, { ...session, _seq: ++sessionSaveSeq })
 }
 
+/**
+ * Delete a session's state file and drop it from the cache.
+ *
+ * @param {string} sessionID - Session identifier
+ */
 export function deleteSession(sessionID) {
   const file = getSessionFile(sessionID)
   if (existsSync(file)) {
@@ -125,9 +192,70 @@ export function deleteSession(sessionID) {
   sessionCache.delete(sessionID)
 }
 
+/**
+ * Drop cached session state for every session targeting a workspace.
+ * Core cleanup (remove()) deletes session files only; this clears the
+ * in-process cache so removed workspaces stop routing commands.
+ *
+ * @param {string} workspace - Workspace path
+ */
+export function invalidateSessionCache(workspace) {
+  for (const [sessionID, session] of sessionCache) {
+    if (session?.workspace === workspace) {
+      sessionCache.delete(sessionID)
+    }
+  }
+}
+
+/**
+ * Save session state only if the session is unchanged since `baseline`
+ * was taken (compared by the cache-only _seq change marker, so saves in
+ * the same millisecond are still detected). Guards against a slow async
+ * result overwriting a newer target, or recreating state after `off`
+ * deleted it.
+ *
+ * @param {string} sessionID - Session ID
+ * @param {object|null} baseline - Session state captured before the await
+ * @param {object} state - New state to save
+ * @returns {boolean} true if saved, false if the session changed meanwhile
+ */
+export function saveSessionIfCurrent(sessionID, baseline, state) {
+  const current = loadSession(sessionID)
+  const baselineSeq = baseline?._seq ?? null
+  const currentSeq = current?._seq ?? null
+  if (baselineSeq !== currentSeq) return false
+  saveSession(sessionID, state)
+  return true
+}
+
 // ============ Workspace Resolution ============
 
+/**
+ * Reject targets containing '.' or '..' path segments. Such a target can
+ * stay inside the clones/worktrees directory after normalization (so a
+ * containment check passes) while the unnormalized repo/branch pair handed
+ * to removeClone() deletes a *different* repo's directory entirely.
+ *
+ * @param {string} target - Raw repo/branch target
+ * @returns {boolean}
+ */
+function hasTraversalSegments(target) {
+  return target.split('/').some((seg) => seg === '.' || seg === '..')
+}
+
+/**
+ * Resolve a user-supplied target (`branch`, `repo/branch`) to an existing
+ * devcontainer workspace. Rejects targets with '.'/'..' segments and
+ * normalizes every join so a target can never escape the clones or
+ * worktrees directories.
+ *
+ * @param {string} branchArg - Branch name or `repo/branch` target
+ * @returns {{workspace: string, repoName: string, branch: string, ambiguous?: boolean, matches?: object[]}|null}
+ *   Resolved workspace, or null when not found
+ */
 export function resolveWorkspace(branchArg) {
+  if (hasTraversalSegments(branchArg)) return null
+
   const clonesDir = getClonesDir()
   let repoName = null
   let branch = branchArg
@@ -142,7 +270,10 @@ export function resolveWorkspace(branchArg) {
   // If repo specified, look directly
   if (repoName) {
     const clonePath = join(clonesDir, repoName, branch)
-    if (existsSync(clonePath)) return { workspace: clonePath, repoName, branch }
+    // isInside rejects '..' segments that would escape the clones directory
+    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
+      return { workspace: clonePath, repoName, branch }
+    }
     return null
   }
   
@@ -154,7 +285,9 @@ export function resolveWorkspace(branchArg) {
     }).trim()
     repoName = basename(gitRoot)
     const clonePath = join(clonesDir, repoName, branch)
-    if (existsSync(clonePath)) return { workspace: clonePath, repoName, branch }
+    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
+      return { workspace: clonePath, repoName, branch }
+    }
   } catch {}
   
   // Search all repos for this branch
@@ -168,7 +301,7 @@ export function resolveWorkspace(branchArg) {
       } catch { continue }
       
       const clonePath = join(repoPath, branch)
-      if (existsSync(clonePath)) {
+      if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
         matches.push({ workspace: clonePath, repoName: repo, branch })
       }
     }
@@ -186,6 +319,8 @@ export function resolveWorkspace(branchArg) {
  * Similar to resolveWorkspace but for worktrees directory
  */
 export function resolveWorktreeWorkspace(branchArg) {
+  if (hasTraversalSegments(branchArg)) return null
+
   const worktreesDir = getWorktreesDir()
   let repoName = null
   let branch = branchArg
@@ -200,7 +335,8 @@ export function resolveWorktreeWorkspace(branchArg) {
   // If repo specified, look directly
   if (repoName) {
     const worktreePath = join(worktreesDir, repoName, branch)
-    if (existsSync(worktreePath)) {
+    // isInside rejects '..' segments that would escape the worktrees directory
+    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
       // Read .git file to get main repo path
       const mainRepo = getMainRepoFromWorktree(worktreePath)
       return { workspace: worktreePath, repoName, branch, mainRepo, repo: repoName }
@@ -216,7 +352,7 @@ export function resolveWorktreeWorkspace(branchArg) {
     }).trim()
     repoName = basename(gitRoot)
     const worktreePath = join(worktreesDir, repoName, branch)
-    if (existsSync(worktreePath)) {
+    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
       return { workspace: worktreePath, repoName, branch, mainRepo: gitRoot, repo: repoName }
     }
   } catch {}
@@ -232,7 +368,7 @@ export function resolveWorktreeWorkspace(branchArg) {
       } catch { continue }
       
       const worktreePath = join(repoPath, branch)
-      if (existsSync(worktreePath)) {
+      if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
         const mainRepo = getMainRepoFromWorktree(worktreePath)
         matches.push({ workspace: worktreePath, repoName: repo, branch, mainRepo, repo })
       }
@@ -274,6 +410,14 @@ function getMainRepoFromWorktree(worktreePath) {
 
 // ============ Command Classification ============
 
+/**
+ * Classify whether a command must run on the host rather than in the
+ * container, based on the leading command word.
+ *
+ * @param {string} command - Command text to classify
+ * @returns {boolean|"escape"} True for host-bound commands, "escape" for
+ *   the HOST: prefix, false to run inside the container
+ */
 export function shouldRunOnHost(command) {
   if (!command || !command.trim()) return true
   

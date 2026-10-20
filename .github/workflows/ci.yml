@@ -45,22 +45,26 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
-      - name: Install opencode
+      # The combined entrypoint must import cleanly and expose the exact shape
+      # OpenCode V2's loader requires (default export with id + setup) alongside
+      # the V1 server() entrypoint. Deeper behavior is covered by the suites.
+      - name: Verify combined V1/V2 entrypoint shape
         run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> $GITHUB_PATH
-
-      - name: Setup opencode plugin
-        run: |
-          mkdir -p ~/.config/opencode/plugins
-          cp -r plugin ~/.config/opencode/plugins/opencode-devcontainers
-          mkdir -p ~/.config/opencode
-          cat > ~/.config/opencode/opencode.json << 'EOF'
-          {
-            "model": "opencode/gpt-5-nano",
-            "plugin": ["/home/runner/.config/opencode/plugins/opencode-devcontainers"]
+          node --input-type=module -e '
+          import { pathToFileURL } from "node:url"
+          const mod = await import(pathToFileURL(process.cwd() + "/plugin/index.js"))
+          const def = mod.default
+          const shape = {
+            id: typeof def?.id,
+            setup: typeof def?.setup,
+            server: typeof def?.server,
+            namedServer: typeof mod.devcontainers,
           }
-          EOF
+          if (shape.id !== "string" || shape.setup !== "function" || shape.server !== "function" || shape.namedServer !== "function") {
+            throw new Error("entrypoint shape invalid: " + JSON.stringify(shape))
+          }
+          console.log("OK: V2 definition id=" + def.id + " with setup() and V1 server()")
+          '
 
       - name: Run tests
         run: npm test

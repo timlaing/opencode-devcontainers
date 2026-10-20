@@ -25,13 +25,19 @@ Thanks for your interest in contributing!
 
 4. Set up the plugin for local testing:
    ```bash
-   # Link plugin to OpenCode plugins directory
-   mkdir -p ~/.config/opencode/plugins
-   ln -sf "$(pwd)/plugin" ~/.config/opencode/plugins/opencode-devcontainers
-
-   # Add to opencode.json
-   # "plugin": ["/path/to/opencode-devcontainers/plugin"]
+   # Add the repo to your opencode.json(c) — the repo root loads as a package
+   # V2: "plugins": ["/path/to/opencode-devcontainers"]
+   # V1: "plugin": ["/path/to/opencode-devcontainers"]
    ```
+
+## Running the documentation site
+
+Preview the MkDocs site locally:
+
+```bash
+pip install mkdocs-material
+mkdocs serve   # http://127.0.0.1:8000
+```
 
 ## Running Tests
 
@@ -53,6 +59,21 @@ its own coverage in CI):
 ```bash
 npm run test:coverage
 ```
+
+Run the end-to-end check against a real OpenCode V2 runtime (requires the
+`opencode` V2 CLI on PATH):
+
+```bash
+npm run e2e:v2
+```
+
+This loads the plugin through OpenCode's actual V2 plugin loader in a
+sandboxed environment and exercises registration, `/devcontainer` command
+execution, real agent-loop tool dispatch, the shell-interception hook,
+multi-session routing, and stale-session cleanup over the HTTP API. It is
+deterministic, offline, and free: only external dependencies (the LLM and
+the container CLIs) are faked. Set `OCDC_E2E_KEEP=1` to keep the sandbox
+directory for inspection.
 
 ## Project Structure
 
@@ -76,6 +97,8 @@ opencode-devcontainers/
 │       ├── ports.js        # Port allocation
 │       ├── worktree.js     # Worktree workspace management
 │       └── workspaces.js   # Unified workspace listing/cleanup
+├── scripts/
+│   └── e2e-v2.mjs         # End-to-end check against a real V2 runtime
 ├── skill/
 │   └── ocdc/
 │       └── SKILL.md        # Agent skill documentation

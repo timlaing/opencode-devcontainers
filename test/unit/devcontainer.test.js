@@ -30,6 +30,7 @@ import {
 } from '../../plugin/core/devcontainer.js'
 import { PATHS } from '../../plugin/core/paths.js'
 import { readJobs, JOB_STATUS, removeJob } from '../../plugin/core/jobs.js'
+import { readPorts } from '../../plugin/core/ports.js'
 import { getOverridePath } from '../../plugin/core/config.js'
 import { getClonePath } from '../../plugin/core/clones.js'
 
@@ -428,12 +429,65 @@ describe('upBackground', () => {
     execSync('git commit -m "Initial"', { cwd: workspaceDir })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Let any in-flight background start settle before wiping state: the
+    // start-dedupe marker is cleared when the background task finishes, and
+    // the next test expects a clean slate (jobs.json is reset in beforeEach)
+    await waitForBackgroundSettled(workspaceDir)
+
     delete process.env.OCDC_CACHE_DIR
     delete process.env.OCDC_CONFIG_DIR
     delete process.env.OCDC_CLONES_DIR
     rmSync(testDir, { recursive: true, force: true })
   })
+
+  async function waitForBackgroundSettled(ws, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const job = (await readJobs())[ws]
+      if (!job || job.status === JOB_STATUS.COMPLETED || job.status === JOB_STATUS.FAILED) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`background start for ${ws} did not settle in time`)
+  }
+
+  async function waitForJobStatus(ws, status, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if ((await readJobs())[ws]?.status === status) return
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`job for ${ws} never reached ${status}`)
+  }
+
+  async function waitForCondition(check, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (await check()) return true
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    return false
+  }
+
+  /** Prepend slow git/devcontainer shims so background starts stay in flight */
+  function installSlowShims({ devcontainerSleep = 0 } = {}) {
+    const slowBin = join(testDir, 'slow-bin')
+    mkdirSync(slowBin, { recursive: true })
+    const realGit = execSync('which git').toString().trim()
+    writeFileSync(
+      join(slowBin, 'git'),
+      `#!/bin/sh\nsleep 1\nexec "${realGit}" "$@"\n`,
+      { mode: 0o755 }
+    )
+    const dcScript = devcontainerSleep > 0 ? `sleep ${devcontainerSleep}\nexit 1` : 'exit 1'
+    writeFileSync(join(slowBin, 'devcontainer'), `#!/bin/sh\n${dcScript}\n`, { mode: 0o755 })
+    const originalPath = process.env.PATH
+    process.env.PATH = `${slowBin}:${originalPath}`
+    return () => { process.env.PATH = originalPath }
+  }
 
   test('returns immediately without blocking', async () => {
     const startTime = Date.now()
@@ -496,6 +550,58 @@ describe('upBackground', () => {
       () => upBackground('some-branch', { cwd: noGitDir }),
       /Not in a git repository/
     )
+  })
+
+  test('deduplicates a second start while one is in flight', async () => {
+    // Slow shims keep the first background start in flight: git sleeps
+    // before the up() resolves, and the fake devcontainer CLI sleeps too
+    const restore = installSlowShims({ devcontainerSleep: 2 })
+    try {
+      const first = await upBackground(workspaceDir)
+      await waitForJobStatus(workspaceDir, JOB_STATUS.RUNNING)
+
+      const second = await upBackground(workspaceDir)
+      assert.deepStrictEqual(second, first, 'second call reuses the in-flight start')
+
+      const job = (await readJobs())[workspaceDir]
+      assert.strictEqual(
+        job.status, JOB_STATUS.RUNNING,
+        'in-flight start must not be reset to pending'
+      )
+    } finally {
+      await waitForBackgroundSettled(workspaceDir, 15000)
+      restore()
+    }
+  })
+
+  test('tears down resources when the workspace is removed mid-start', async () => {
+    // Slow shims delay the background up(): git sleeps past the removal
+    // below, and the fake devcontainer CLI sleeps while the port allocation
+    // is live — so the test can observe both the leak and the undo
+    const restore = installSlowShims({ devcontainerSleep: 2 })
+    try {
+      const started = await upBackground(workspaceDir)
+
+      // Remove the workspace while the background start is still running
+      await remove(started.workspace, started.repo, started.branch)
+
+      // The background allocates the port anyway...
+      const allocated = await waitForCondition(
+        async () => (await readPorts())[workspaceDir]?.port != null
+      )
+      assert.ok(allocated, 'background allocated a port after the removal')
+
+      // ...and the undo must release it instead of leaving it behind
+      const released = await waitForCondition(
+        async () => (await readPorts())[workspaceDir]?.port == null
+      )
+      assert.ok(released, 'port allocation released by the undo')
+      assert.ok(!(await readJobs())[workspaceDir], 'job not resurrected')
+    } finally {
+      // Let the background task finish clearing its in-flight marker
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      restore()
+    }
   })
 })
 

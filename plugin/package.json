@@ -1,9 +1,10 @@
 {
-  "name": "opencode-devcontainers",
+  "name": "@timlaing/opencode-devcontainers",
   "version": "0.1.0",
   "type": "module",
   "main": "index.js",
   "peerDependencies": {
-    "@opencode-ai/plugin": "*"
+    "@opencode-ai/plugin": "*",
+    "@opencode/plugin": "*"
   }
 }

@@ -322,3 +322,52 @@ describe('JOB_STATUS constants', () => {
     assert.strictEqual(JOB_STATUS.FAILED, 'failed')
   })
 })
+
+describe('concurrent job mutations', () => {
+  const testDir = join(homedir(), '.cache/ocdc-test-jobs-conc-' + Date.now())
+  
+  beforeEach(() => {
+    process.env.OCDC_CACHE_DIR = testDir
+    mkdirSync(testDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    delete process.env.OCDC_CACHE_DIR
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  test('concurrent startJob calls do not lose entries', async () => {
+    // Each startJob is a read-modify-write on the shared jobs.json; without
+    // locking, overlapping writes drop entries
+    const workspaces = ['/ws/conc/a', '/ws/conc/b', '/ws/conc/c', '/ws/conc/d']
+    await Promise.all(workspaces.map((ws) => startJob(ws, 'repo', 'main')))
+
+    const jobs = await readJobs()
+    for (const ws of workspaces) {
+      assert.ok(jobs[ws], `job for ${ws} present`)
+      assert.strictEqual(jobs[ws].status, JOB_STATUS.PENDING)
+    }
+  })
+
+  test('a job created while cleanupJobs runs survives', async () => {
+    // Stale completed job that cleanup should remove
+    await writeJobs({
+      '/ws/conc/stale': {
+        workspace: '/ws/conc/stale', repo: 'repo', branch: 'old',
+        status: JOB_STATUS.COMPLETED,
+        completedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+      },
+    })
+
+    // Overlapping a locked cleanup with a start: the fresh job must not be
+    // erased by a cleanup snapshot taken before it existed
+    await Promise.all([
+      cleanupJobs({ completedMaxAgeMs: 0, failedMaxAgeMs: 0 }),
+      startJob('/ws/conc/fresh', 'repo', 'main'),
+    ])
+
+    const jobs = await readJobs()
+    assert.ok(!jobs['/ws/conc/stale'], 'stale job removed')
+    assert.ok(jobs['/ws/conc/fresh'], 'fresh job survives concurrent cleanup')
+  })
+})

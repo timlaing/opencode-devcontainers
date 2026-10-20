@@ -189,6 +189,13 @@ export async function generateOverrideConfig(workspace, port, repoName) {
   return overridePath
 }
 
+/**
+ * Check whether a command is available on the system PATH.
+ *
+ * @param {string} command - Command name to look up
+ * @param {string} [platform] - OS platform (selects `which` vs `where`)
+ * @returns {Promise<boolean>} True if the command resolves
+ */
 export async function checkCommand(command, platform = process.platform) {
   return new Promise(resolve => {
     const locator = platform === 'win32' ? 'where' : 'which'
@@ -198,10 +205,24 @@ export async function checkCommand(command, platform = process.platform) {
   })
 }
 
+/**
+ * Test whether a configured container CLI path points at Podman.
+ *
+ * @param {string} command - Configured docker path
+ * @returns {boolean} True if the path names the podman executable
+ */
 function isPodmanPath(command) {
   return /(^|[\\/])podman(?:\.exe)?$/i.test(command)
 }
 
+/**
+ * Find a Compose command compatible with the configured container runtime.
+ * Prefers podman-compose for Podman, then falls back to docker-compose.
+ *
+ * @param {string} dockerPath - Configured container CLI path
+ * @returns {Promise<string>} The compose command to use
+ * @throws {Error} When no compatible Compose command is installed
+ */
 async function detectComposePath(dockerPath) {
   if (await checkCommand('podman-compose')) return 'podman-compose'
   if (await checkCommand('docker-compose')) return 'docker-compose'

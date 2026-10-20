@@ -27,3 +27,4 @@ coverage/
 # Local environment
 .env
 .env.local
+site/
