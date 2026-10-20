@@ -1,28 +1,42 @@
 # Installation
 
-The package is published on
-[GitHub Packages](https://github.com/timlaing/opencode-devcontainers/packages)
-as `@timlaing/opencode-devcontainers` (not on npmjs.com). OpenCode
-installs npm plugins automatically when they appear in your
-configuration, but npm/bun must be able to resolve the `@timlaing`
-scope to the GitHub Packages registry first — see
-[Registry setup](#registry-setup-github-packages).
+The package is published to **both** registries as
+`@timlaing/opencode-devcontainers`:
 
-## Registry setup (GitHub Packages)
+- **npmjs** (recommended) —
+  [`@timlaing/opencode-devcontainers`](https://www.npmjs.com/package/@timlaing/opencode-devcontainers).
+  Public reads need no token, so this is the default for most setups.
+- **GitHub Packages** —
+  [packages](https://github.com/timlaing/opencode-devcontainers/packages).
+  Requires a token for every operation, even reads. Useful if your scope is
+  already mapped to `npm.pkg.github.com`, or as a fallback.
 
-GitHub Packages requires authentication for every registry operation,
-even for public packages. Point the `@timlaing` scope at the GitHub
-Packages npm registry in an `.npmrc` — per project (next to where you
+OpenCode installs npm plugins automatically when they appear in your
+configuration. Because both registries use the `@timlaing` scope, a
+`.npmrc` scope mapping decides which one resolves — see
+[Registry setup](#registry-setup).
+
+## Registry setup
+
+npm/bun resolve the `@timlaing` scope through whatever the scope is mapped
+to in `.npmrc`. Do **one** of the following — per project (next to where you
 run OpenCode) or globally in `~/.npmrc`:
+
+**npmjs (recommended, no token):**
+
+```ini
+@timlaing:registry=https://registry.npmjs.org
+```
+
+**GitHub Packages (token required for reads):**
 
 ```ini
 @timlaing:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
 ```
 
-Then export a token with `read:packages` (a classic PAT with the
-`read:packages` scope — GitHub's npm registry does not accept
-fine-grained tokens):
+then export a token with the `read:packages` scope (a classic PAT —
+GitHub's npm registry does not accept fine-grained tokens):
 
 ```sh
 export NODE_AUTH_TOKEN=github_pat_...
