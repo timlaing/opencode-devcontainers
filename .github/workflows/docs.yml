@@ -32,8 +32,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pin the interpreter: system Python changes with the runner image, and
+      # --only-binary requires wheels to exist for every dependency on it.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       - name: Install MkDocs Material
-        run: pip install mkdocs-material==9.7.7
+        run: pip install --only-binary :all: mkdocs-material==9.7.7
 
       - name: Build site
         run: mkdocs build --strict

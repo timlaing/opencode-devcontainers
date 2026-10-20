@@ -1,8 +1,8 @@
 // Shared handler logic used by both the V1 (server()) and V2 (setup()) plugin
 // entrypoints. Everything here is pure Node — no dependency on either plugin
 // API — so behavior stays identical across OpenCode versions.
-import { existsSync, readdirSync, unlinkSync, readFileSync } from "fs"
-import { join } from "path"
+import { existsSync, readdirSync, unlinkSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 
 import {
   loadSession,
@@ -27,9 +27,6 @@ import {
   readPorts,
   readJobs,
   getWorkspaceStatus,
-  findStaleWorkspaces,
-  listAllWorkspaces,
-  formatWorkspace,
 } from "./core/index.js"
 
 /**
@@ -181,40 +178,66 @@ export async function handleRemoveSingle(rmArg, sessionID, confirmed) {
   return formatRemoveSummary(summary)
 }
 
-/**
- * Handle `/devcontainer rm all`
- */
-export async function handleRemoveAll(sessionID, confirmed) {
-  // Collect all tracked devcontainer workspaces from all sources
+/** Collect all tracked devcontainer workspaces from all sources */
+async function collectRemoveAllEntries() {
   const seen = new Set()
   const entries = []
 
+  const add = (workspace, repo, branch) => {
+    if (seen.has(workspace)) return
+    seen.add(workspace)
+    entries.push({ workspace, repo, branch })
+  }
+
   // From clones directory
-  const clones = await listClones()
-  for (const c of clones) {
-    if (!seen.has(c.workspace)) {
-      seen.add(c.workspace)
-      entries.push(c)
-    }
+  for (const c of await listClones()) {
+    add(c.workspace, c.repo, c.branch)
   }
 
   // From ports.json (orphan entries not already covered)
   const ports = await readPorts()
   for (const [ws, data] of Object.entries(ports)) {
-    if (!seen.has(ws)) {
-      seen.add(ws)
-      entries.push({ workspace: ws, repo: data.repo, branch: data.branch })
-    }
+    add(ws, data.repo, data.branch)
   }
 
   // From jobs.json (orphan entries not already covered)
   const jobs = await readJobs()
   for (const [ws, data] of Object.entries(jobs)) {
-    if (!seen.has(ws)) {
-      seen.add(ws)
-      entries.push({ workspace: ws, repo: data.repo, branch: data.branch })
-    }
+    add(ws, data.repo, data.branch)
   }
+
+  return entries
+}
+
+/** Pre-removal warnings for `rm all` (read-only status checks) */
+async function removeAllWarnings(entries, sessionID) {
+  const statuses = await Promise.all(
+    entries.map(async (entry) => {
+      try {
+        return await getWorkspaceStatus(entry.workspace)
+      } catch {
+        return null
+      }
+    })
+  )
+
+  const msgs = []
+  if (statuses.some((s) => s?.hasUncommitted)) {
+    msgs.push("Some workspaces have uncommitted changes.")
+  }
+
+  if (countOtherSessions(null, sessionID) > 0) {
+    msgs.push("Some workspaces are active in other sessions.")
+  }
+
+  return msgs
+}
+
+/**
+ * Handle `/devcontainer rm all`
+ */
+export async function handleRemoveAll(sessionID, confirmed) {
+  const entries = await collectRemoveAllEntries()
 
   if (entries.length === 0) {
     return "No devcontainers to clean up."
@@ -222,36 +245,22 @@ export async function handleRemoveAll(sessionID, confirmed) {
 
   // Pre-removal warnings (skip when already confirmed)
   if (!confirmed) {
-    const msgs = []
-
-    for (const entry of entries) {
-      try {
-        const status = await getWorkspaceStatus(entry.workspace)
-        if (status.hasUncommitted) {
-          msgs.push("Some workspaces have uncommitted changes.")
-          break
-        }
-      } catch {}
-    }
-
-    if (countOtherSessions(null, sessionID) > 0) {
-      msgs.push("Some workspaces are active in other sessions.")
-    }
-
+    const msgs = await removeAllWarnings(entries, sessionID)
     if (msgs.length > 0) {
       return msgs.join('\n') + '\n\nReply "yes" to confirm or "no" to cancel.'
     }
   }
 
-  // Remove each devcontainer
+  // Remove each devcontainer sequentially — remove() does read-modify-write
+  // on the shared ports.json/jobs.json, so parallel runs could race
   let output = `Removing ${entries.length} devcontainer(s)...\n\n`
   let totalErrors = 0
-
-  for (const entry of entries) {
+  await entries.reduce(async (prev, entry) => {
+    await prev
     const summary = await remove(entry.workspace, entry.repo, entry.branch)
     output += formatRemoveSummary(summary) + '\n'
     totalErrors += summary.errors.length
-  }
+  }, Promise.resolve())
 
   // Clear current session
   const session = loadSession(sessionID)
@@ -268,137 +277,109 @@ export async function handleRemoveAll(sessionID, confirmed) {
   return output
 }
 
-/**
- * Shared executor for the `devcontainer` tool (target/off/rm/status).
- * Returns the user-facing string; entrypoints adapt it to their API shape.
- *
- * @param {{ target?: string, create?: string|boolean, confirmed?: boolean }} args
- * @param {{ sessionID: string, signal?: AbortSignal }} ctx
- */
-export async function executeDevcontainerTool(args, ctx) {
-  const { sessionID } = ctx
-  const { target, create, confirmed } = args
-  const shouldCreate = create === "true" || create === true
-
-  // Verify devcontainer CLI is installed
-  const hasCli = await checkDevcontainerCli()
-  if (!hasCli) {
-    return "devcontainer CLI not found.\n\nInstall with: `npm install -g @devcontainers/cli`"
-  }
-
-  // Status request (no target)
-  if (!target || target.trim() === "") {
-    const session = loadSession(sessionID)
-    if (!session) {
-      return "No devcontainer active for this session.\n\n" +
-             "Use `/devcontainer <branch>` to target a devcontainer."
-    }
-
-    // Check for background job status
-    if (session.starting) {
-      const job = await getJob(session.workspace)
-      if (job) {
-        if (job.status === JOB_STATUS.PENDING) {
-          return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
-                 `Workspace: ${session.workspace}\n` +
-                 `Status: Starting (pending)...\n\n` +
-                 `Container start is queued. Please wait.`
-        }
-        if (job.status === JOB_STATUS.RUNNING) {
-          return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
-                 `Workspace: ${session.workspace}\n` +
-                 `Status: Starting (in progress)...\n\n` +
-                 `Container is being built/started. This may take a few minutes.`
-        }
-        if (job.status === JOB_STATUS.FAILED) {
-          return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
-                 `Workspace: ${session.workspace}\n` +
-                 `Status: Failed to start\n\n` +
-                 `Error: ${job.error}\n\n` +
-                 `Use \`/devcontainer ${session.branch}\` to retry.`
-        }
-        if (job.status === JOB_STATUS.COMPLETED) {
-          // Update session to remove starting flag
-          saveSession(sessionID, {
-            ...session,
-            starting: false,
-          })
-          return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
-                 `Workspace: ${session.workspace}\n` +
-                 `Port: ${job.port}\n` +
-                 `Status: Running\n\n` +
-                 `Container is ready! All commands will run inside this container.\n` +
-                 `Use \`/devcontainer off\` to disable.`
-        }
-      }
-    }
-
-    const running = await isContainerRunning(session.workspace)
+/** Status text for a session whose container start job is pending/running/failed */
+function describeStartingJob(session, job) {
+  if (!job) return null
+  if (job.status === JOB_STATUS.PENDING) {
     return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
            `Workspace: ${session.workspace}\n` +
-           `Status: ${running ? "Running" : "Not running"}\n` +
-           `\nUse \`/devcontainer off\` to disable.`
+           `Status: Starting (pending)...\n\n` +
+           `Container start is queued. Please wait.`
+  }
+  if (job.status === JOB_STATUS.RUNNING) {
+    return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
+           `Workspace: ${session.workspace}\n` +
+           `Status: Starting (in progress)...\n\n` +
+           `Container is being built/started. This may take a few minutes.`
+  }
+  if (job.status === JOB_STATUS.FAILED) {
+    return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
+           `Workspace: ${session.workspace}\n` +
+           `Status: Failed to start\n\n` +
+           `Error: ${job.error}\n\n` +
+           `Use \`/devcontainer ${session.branch}\` to retry.`
+  }
+  return null
+}
+
+/** Status request (no target) for the `devcontainer` tool */
+async function devcontainerStatus(sessionID) {
+  const session = loadSession(sessionID)
+  if (!session) {
+    return "No devcontainer active for this session.\n\n" +
+           "Use `/devcontainer <branch>` to target a devcontainer."
   }
 
-  // Disable request
-  if (target === "off") {
-    const session = loadSession(sessionID)
-    deleteSession(sessionID)
-    if (session) {
-      return `Devcontainer mode disabled. Commands will now run on the host.`
-    }
-    return "No devcontainer was active for this session."
-  }
-
-  // Remove request
-  if (target.startsWith("rm ")) {
-    const rmArg = target.slice(3).trim()
-
-    if (!rmArg) {
-      return "Usage: `/devcontainer rm <branch>` or `/devcontainer rm all`"
-    }
-
-    if (rmArg === "all") {
-      return await handleRemoveAll(sessionID, confirmed)
-    }
-
-    return await handleRemoveSingle(rmArg, sessionID, confirmed)
-  }
-
-  // Resolve workspace (check if clone already exists)
-  const resolved = resolveWorkspace(target)
-
-  if (!resolved) {
-    // Workspace doesn't exist - start it in background (non-blocking)
-    try {
-      const result = await upBackground(target, {
-        cwd: process.cwd(),
-      })
-
+  // Check for background job status
+  if (session.starting) {
+    const job = await getJob(session.workspace)
+    const startingText = describeStartingJob(session, job)
+    if (startingText) return startingText
+    if (job?.status === JOB_STATUS.COMPLETED) {
+      // Update session to remove starting flag
       saveSession(sessionID, {
-        branch: result.branch,
-        workspace: result.workspace,
-        repoName: result.repo,
-        starting: true,  // Mark as starting
+        ...session,
+        starting: false,
       })
-
-      return `Starting container for ${result.repo}/${result.branch}...\n` +
-             `Workspace: ${result.workspace}\n\n` +
-             `Container is being created in the background. This may take a few minutes.\n` +
-             `Use \`/devcontainer\` to check status.\n\n` +
-             `Session is now targeting this container. Commands will work once it's ready.`
-    } catch (err) {
-      // Quick validation failed (e.g., not in git repo, no devcontainer.json)
-      if (!shouldCreate) {
-        return `Cannot create devcontainer for '${target}'.\n\n` +
-               `Error: ${err.message}\n\n` +
-               `Make sure you're in a git repository with a devcontainer.json file.`
-      }
-
-      return `Failed to create workspace: ${err.message}`
+      return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
+             `Workspace: ${session.workspace}\n` +
+             `Port: ${job.port}\n` +
+             `Status: Running\n\n` +
+             `Container is ready! All commands will run inside this container.\n` +
+             `Use \`/devcontainer off\` to disable.`
     }
   }
 
+  const running = await isContainerRunning(session.workspace)
+  return `Current devcontainer: ${session.repoName}/${session.branch}\n` +
+         `Workspace: ${session.workspace}\n` +
+         `Status: ${running ? "Running" : "Not running"}\n` +
+         `\nUse \`/devcontainer off\` to disable.`
+}
+
+/** Disable request for the `devcontainer` tool */
+function devcontainerOff(sessionID) {
+  const session = loadSession(sessionID)
+  deleteSession(sessionID)
+  if (session) {
+    return `Devcontainer mode disabled. Commands will now run on the host.`
+  }
+  return "No devcontainer was active for this session."
+}
+
+/** Start a not-yet-existing workspace in the background (non-blocking) */
+async function startNewDevcontainer(sessionID, target, shouldCreate) {
+  try {
+    const result = await upBackground(target, {
+      cwd: process.cwd(),
+    })
+
+    saveSession(sessionID, {
+      branch: result.branch,
+      workspace: result.workspace,
+      repoName: result.repo,
+      starting: true,  // Mark as starting
+    })
+
+    return `Starting container for ${result.repo}/${result.branch}...\n` +
+           `Workspace: ${result.workspace}\n\n` +
+           `Container is being created in the background. This may take a few minutes.\n` +
+           `Use \`/devcontainer\` to check status.\n\n` +
+           `Session is now targeting this container. Commands will work once it's ready.`
+  } catch (err) {
+    // Quick validation failed (e.g., not in git repo, no devcontainer.json)
+    if (!shouldCreate) {
+      return `Cannot create devcontainer for '${target}'.\n\n` +
+             `Error: ${err.message}\n\n` +
+             `Make sure you're in a git repository with a devcontainer.json file.`
+    }
+
+    return `Failed to create workspace: ${err.message}`
+  }
+}
+
+/** Attach the session to an already-tracked workspace (starting it if needed) */
+async function attachDevcontainer(sessionID, resolved, target) {
   if (resolved.ambiguous) {
     const options = resolved.matches
       .map(m => `  - ${m.repoName}/${m.branch}`)
@@ -448,12 +429,88 @@ export async function executeDevcontainerTool(args, ctx) {
 }
 
 /**
+ * Shared executor for the `devcontainer` tool (target/off/rm/status).
+ * Returns the user-facing string; entrypoints adapt it to their API shape.
+ *
+ * @param {{ target?: string, create?: string|boolean, confirmed?: boolean }} args
+ * @param {{ sessionID: string, signal?: AbortSignal }} ctx
+ */
+export async function executeDevcontainerTool(args, ctx) {
+  const { sessionID } = ctx
+  const { target, create, confirmed } = args
+  const shouldCreate = create === "true" || create === true
+
+  // Verify devcontainer CLI is installed
+  const hasCli = await checkDevcontainerCli()
+  if (!hasCli) {
+    return "devcontainer CLI not found.\n\nInstall with: `npm install -g @devcontainers/cli`"
+  }
+
+  // Status request (no target)
+  if (!target || target.trim() === "") {
+    return devcontainerStatus(sessionID)
+  }
+
+  // Disable request
+  if (target === "off") {
+    return devcontainerOff(sessionID)
+  }
+
+  // Remove request
+  if (target.startsWith("rm ")) {
+    const rmArg = target.slice(3).trim()
+
+    if (!rmArg) {
+      return "Usage: `/devcontainer rm <branch>` or `/devcontainer rm all`"
+    }
+
+    if (rmArg === "all") {
+      return handleRemoveAll(sessionID, confirmed)
+    }
+
+    return handleRemoveSingle(rmArg, sessionID, confirmed)
+  }
+
+  // Resolve workspace (check if clone already exists)
+  const resolved = resolveWorkspace(target)
+
+  if (!resolved) {
+    // Workspace doesn't exist - start it in background (non-blocking)
+    return startNewDevcontainer(sessionID, target, shouldCreate)
+  }
+
+  return attachDevcontainer(sessionID, resolved, target)
+}
+
+/**
  * Shared executor for the `devcontainer_exec` tool.
  * Returns the user-facing string; entrypoints adapt it to their API shape.
  *
  * @param {{ command: string }} args
  * @param {{ sessionID: string, signal?: AbortSignal }} ctx
  */
+/** If the start job is still settling, return the user-facing message (null to proceed) */
+async function settledStartingExecMessage(sessionID, session) {
+  const job = await getJob(session.workspace)
+  if (!job) return null
+  if (job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.RUNNING) {
+    return `Container is still starting for ${session.repoName}/${session.branch}.\n\n` +
+           `Please wait and try again, or use \`/devcontainer\` to check status.`
+  }
+  if (job.status === JOB_STATUS.FAILED) {
+    return `Container failed to start: ${job.error}\n\n` +
+           `Use \`/devcontainer ${session.branch}\` to retry.`
+  }
+  if (job.status === JOB_STATUS.COMPLETED) {
+    // Container is ready - update session to remove starting flag
+    saveSession(sessionID, {
+      ...session,
+      starting: false,
+    })
+  }
+  return null
+}
+
 export async function executeDevcontainerExecTool(args, ctx) {
   const { sessionID, signal } = ctx
   const { command } = args
@@ -465,24 +522,8 @@ export async function executeDevcontainerExecTool(args, ctx) {
 
   // Check if container is still starting
   if (session.starting) {
-    const job = await getJob(session.workspace)
-    if (job) {
-      if (job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.RUNNING) {
-        return `Container is still starting for ${session.repoName}/${session.branch}.\n\n` +
-               `Please wait and try again, or use \`/devcontainer\` to check status.`
-      }
-      if (job.status === JOB_STATUS.FAILED) {
-        return `Container failed to start: ${job.error}\n\n` +
-               `Use \`/devcontainer ${session.branch}\` to retry.`
-      }
-      if (job.status === JOB_STATUS.COMPLETED) {
-        // Container is ready - update session to remove starting flag
-        saveSession(sessionID, {
-          ...session,
-          starting: false,
-        })
-      }
-    }
+    const startingMessage = await settledStartingExecMessage(sessionID, session)
+    if (startingMessage) return startingMessage
   }
 
   try {
@@ -511,6 +552,21 @@ export async function executeDevcontainerExecTool(args, ctx) {
  * @returns {Promise<{ command?: string, workdir?: string }|null>} rewrites to
  *   apply, or null to leave the call untouched
  */
+/** Starting-container interception: helpful echo, or flag reset on completion */
+async function startingInterception(sessionID, session) {
+  const job = await getJob(session.workspace)
+  if (!job) return null
+  if (job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.RUNNING) {
+    // Rewrite to echo a helpful message instead of failing
+    return { command: `echo "Container is still starting for ${session.repoName}/${session.branch}. Please wait and try again, or use /devcontainer to check status." && exit 1` }
+  }
+  if (job.status === JOB_STATUS.COMPLETED) {
+    // Container is ready - update session
+    saveSession(sessionID, { ...session, starting: false })
+  }
+  return null
+}
+
 export async function interceptShellCommand({ tool, sessionID, command, workdir }) {
   // Only intercept shell commands (V1: bash, V2: shell)
   if (tool !== "bash" && tool !== "shell") return null
@@ -545,15 +601,8 @@ export async function interceptShellCommand({ tool, sessionID, command, workdir 
   // Handle devcontainer sessions
   // Check if container is still starting - provide helpful error instead of cryptic failure
   if (session.starting) {
-    const job = await getJob(session.workspace)
-    if (job && (job.status === JOB_STATUS.PENDING || job.status === JOB_STATUS.RUNNING)) {
-      // Rewrite to echo a helpful message instead of failing
-      return { command: `echo "Container is still starting for ${session.repoName}/${session.branch}. Please wait and try again, or use /devcontainer to check status." && exit 1` }
-    }
-    if (job && job.status === JOB_STATUS.COMPLETED) {
-      // Container is ready - update session (fire-and-forget)
-      saveSession(sessionID, { ...session, starting: false })
-    }
+    const interception = await startingInterception(sessionID, session)
+    if (interception) return interception
   }
 
   // Wrap with devcontainer exec (using safe command builder to prevent shell injection)

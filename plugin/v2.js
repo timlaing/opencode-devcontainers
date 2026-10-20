@@ -1,9 +1,9 @@
 // V2 plugin setup (OpenCode V2 plugin API). Registered from the combined
 // entrypoint in index.js via Plugin.define({ id, setup }). Registers only the
 // devcontainer functionality — OpenCode V2 supports worktrees natively.
-import { readFileSync } from "fs"
-import { join, dirname } from "path"
-import { fileURLToPath } from "url"
+import { readFileSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import { runWithTimeout } from "./helpers.js"
 
@@ -29,14 +29,14 @@ function devcontainerCommandBody() {
 
 export async function setup(ctx) {
   // Cleanup stale sessions (don't block on slow API)
-  runWithTimeout(
+  void runWithTimeout(
     () => cleanupStaleSessions(async () =>
       ((await ctx.session.list()).data || []).map(s => s.id)),
     INIT_TIMEOUT_MS
   )
 
   // Cleanup old jobs (don't block)
-  runWithTimeout(() => cleanupJobs(), INIT_TIMEOUT_MS)
+  void runWithTimeout(() => cleanupJobs(), INIT_TIMEOUT_MS)
 
   // /devcontainer command — V2 registers commands directly instead of
   // installing command files into the config directory (V1 behavior).

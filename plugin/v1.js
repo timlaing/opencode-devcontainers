@@ -1,9 +1,9 @@
 // V1 plugin implementation (OpenCode >= 1.18.29 object entrypoints).
 // Exposed as `server()` on the combined entrypoint in index.js; V1 calls it
 // with the classic `{ client }` argument.
-import { mkdirSync, existsSync, unlinkSync, copyFileSync } from "fs"
-import { join, dirname } from "path"
-import { fileURLToPath } from "url"
+import { mkdirSync, existsSync, unlinkSync, copyFileSync } from "node:fs"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 import { tool } from "@opencode-ai/plugin/tool"
 
 import {
@@ -69,21 +69,47 @@ async function installCommands(client) {
   } catch {}
 }
 
+/** Fetch workspace statuses in parallel (read-only) */
+async function withStatuses(workspaces) {
+  return Promise.all(
+    workspaces.map(async (ws) => ({ ws, status: await getWorkspaceStatus(ws.workspace) }))
+  )
+}
+
+/** Status text for the worktree tool (no target given) */
+function worktreeStatusText(session) {
+  if (!session) {
+    return "No workspace active for this session.\n\n" +
+           "Use `/worktree <branch>` to create/target a worktree."
+  }
+
+  if (session.type !== "worktree") {
+    return `Current session is targeting a devcontainer, not a worktree.\n` +
+           `Use \`/devcontainer\` to check devcontainer status, or \`/devcontainer off\` first.`
+  }
+
+  return `Current worktree: ${session.repoName}/${session.branch}\n` +
+         `Workspace: ${session.workspace}\n` +
+         `Main repo: ${session.mainRepo}\n` +
+         `\nAll bash commands will run in this worktree directory.\n` +
+         `Use \`/worktree off\` to disable.`
+}
+
 // ============ Plugin Export ============
 
 export const devcontainers = async ({ client }) => {
   // Install command files if needed (don't block on slow API)
-  runWithTimeout(() => installCommands(client), INIT_TIMEOUT_MS)
+  void runWithTimeout(() => installCommands(client), INIT_TIMEOUT_MS)
   
   // Cleanup stale sessions (don't block on slow API)
-  runWithTimeout(
+  void runWithTimeout(
     () => cleanupStaleSessions(async () =>
       ((await client.session.list()).data || []).map(s => s.id)),
     INIT_TIMEOUT_MS
   )
   
   // Cleanup old jobs (don't block)
-  runWithTimeout(() => cleanupJobs(), INIT_TIMEOUT_MS)
+  void runWithTimeout(() => cleanupJobs(), INIT_TIMEOUT_MS)
   
   return {
     tool: {
@@ -141,29 +167,14 @@ export const devcontainers = async ({ client }) => {
           
           // Status request (no target)
           if (!target || target.trim() === "") {
-            const session = loadSession(sessionID)
-            if (!session) {
-              return "No workspace active for this session.\n\n" +
-                     "Use `/worktree <branch>` to create/target a worktree."
-            }
-            
-            if (session.type !== "worktree") {
-              return `Current session is targeting a devcontainer, not a worktree.\n` +
-                     `Use \`/devcontainer\` to check devcontainer status, or \`/devcontainer off\` first.`
-            }
-            
-            return `Current worktree: ${session.repoName}/${session.branch}\n` +
-                   `Workspace: ${session.workspace}\n` +
-                   `Main repo: ${session.mainRepo}\n` +
-                   `\nAll bash commands will run in this worktree directory.\n` +
-                   `Use \`/worktree off\` to disable.`
+            return worktreeStatusText(loadSession(sessionID))
           }
           
           // Disable request
           if (target === "off") {
             const session = loadSession(sessionID)
             deleteSession(sessionID)
-            if (session && session.type === "worktree") {
+            if (session?.type === "worktree") {
               return `Worktree mode disabled. Commands will now run in the current directory.`
             }
             if (session) {
@@ -264,8 +275,7 @@ export const devcontainers = async ({ client }) => {
             
             let output = `Found ${stale.length} stale workspace(s) (not accessed in 7+ days):\n\n`
             
-            for (const ws of stale) {
-              const status = await getWorkspaceStatus(ws.workspace)
+            for (const { ws, status } of await withStatuses(stale)) {
               output += formatWorkspace(ws, status) + '\n'
               output += `  Path: ${ws.workspace}\n`
               if (ws.hasUncommitted) {
@@ -298,8 +308,7 @@ export const devcontainers = async ({ client }) => {
           
           if (clones.length > 0) {
             output += `**Devcontainer Clones** (${clones.length}):\n`
-            for (const ws of clones) {
-              const status = await getWorkspaceStatus(ws.workspace)
+            for (const { ws, status } of await withStatuses(clones)) {
               output += `  ${formatWorkspace(ws, status)}\n`
             }
             output += '\n'
@@ -307,8 +316,7 @@ export const devcontainers = async ({ client }) => {
           
           if (worktrees.length > 0) {
             output += `**Worktrees** (${worktrees.length}):\n`
-            for (const ws of worktrees) {
-              const status = await getWorkspaceStatus(ws.workspace)
+            for (const { ws, status } of await withStatuses(worktrees)) {
               output += `  ${formatWorkspace(ws, status)}\n`
             }
             output += '\n'
