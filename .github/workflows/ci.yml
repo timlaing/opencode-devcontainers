@@ -106,16 +106,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the next step can compare the tag against
-          # origin/main.
+          # origin/main. No credential is persisted: nothing in this job
+          # pushes to the repository, and a token in .git/config would be
+          # readable by any code that runs later in the job.
           fetch-depth: 0
+          persist-credentials: false
 
       # Releases are cut from main (`gh release create ... --target main`);
       # refuse a tag that points outside main's history so unmerged code can
-      # never reach either registry.
+      # never reach either registry. Ancestry is resolved from GITHUB_REF
+      # (the release tag itself), not from GITHUB_SHA.
       - name: Verify the release tag points into main
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "release tag $GITHUB_REF_NAME ($GITHUB_SHA) is not reachable from origin/main; refusing to publish unmerged code" >&2
+          if ! git merge-base --is-ancestor "$GITHUB_REF" origin/main; then
+            echo "release tag $GITHUB_REF_NAME is not reachable from origin/main; refusing to publish unmerged code" >&2
             exit 1
           fi
 
@@ -136,12 +140,22 @@ jobs:
       - name: Pin npm for trusted publishing support
         run: npm install -g npm@11.21.1 --ignore-scripts
 
+      # --ignore-scripts: no third-party lifecycle code executes in this job.
+      # It runs with `id-token: write` (npm OIDC), so a compromised install
+      # script could otherwise mint publish credentials; the lockfile pins
+      # and integrity hashes cover tarballs, not what their scripts do.
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       # The release event is independent of the push run's test job, so this
       # job verifies the tagged tree passes its own suite before anything is
-      # published.
+      # published. Same git identity as the test job (tests create commits
+      # in temp repositories).
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@test.local"
+          git config --global user.name "CI Test"
+
       - name: Run tests
         run: npm test
 
@@ -181,7 +195,7 @@ jobs:
           if [ "$view_rc" -eq 0 ]; then
             echo "${version} is already on npmjs; nothing to publish"
           elif printf '%s' "$view_out" | grep -qiE 'E404|404 Not Found|not in this registry|no matching version'; then
-            npm publish --provenance --access public
+            npm publish --provenance --access public --ignore-scripts
           else
             echo "unexpected error querying npmjs for ${version}:" >&2
             printf '%s\n' "$view_out" >&2

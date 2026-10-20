@@ -246,6 +246,10 @@ function main() {
       GH_PACKAGES_REGISTRY,
       '--access',
       'public',
+      // No lifecycle code runs while publishing (the root package defines
+      // none; this keeps third-party scripts out of the credential-bearing
+      // publish step in CI).
+      '--ignore-scripts',
       '--userconfig',
       userconfig,
       ...(dryRun ? ['--dry-run'] : []),

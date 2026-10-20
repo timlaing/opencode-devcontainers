@@ -38,6 +38,9 @@ publishes anything. To cut a release:
       (`npm.pkg.github.com`) via `scripts/publish-github-packages.mjs`
 4. Re-running the publish job is safe: both publishes skip when the version
    is already present. Draft/prerelease releases are ignored by the job.
+   If several releases are cut in quick succession, GitHub keeps only one
+   queued publish run — a superseded run can be re-run from the Actions
+   tab (both publishes are idempotent, so re-runs never duplicate).
 
 The npmjs publish uses **trusted publishing (OIDC)** — no npm token secret
 exists in the repo. `id-token: write` lets the npm CLI exchange a
