@@ -224,7 +224,23 @@ jobs:
               printf '%s\n' "$latest" >&2
               exit 1
             fi
-            npm publish --provenance --access public --ignore-scripts
+            # GitHub fires BOTH `published` and `released` for a stable
+            # release, so this job runs twice per release (serialized by the
+            # release-publish group; the first run does the work). The
+            # second run can catch the registry's staging window: `npm view`
+            # above still 404s for a version whose PUT was accepted moments
+            # earlier, and a duplicate publish then fails E409 "already
+            # staged/published". That conflict proves the invariant holds —
+            # continue to the mirror instead of failing. Any other publish
+            # error still fails the job loudly.
+            set +e
+            publish_out=$(npm publish --provenance --access public --ignore-scripts 2>&1)
+            publish_rc=$?
+            set -e
+            printf '%s\n' "$publish_out"
+            if [ "$publish_rc" -ne 0 ] && ! printf '%s' "$publish_out" | grep -qiE 'E409|already staged|cannot publish over'; then
+              exit 1
+            fi
           else
             echo "unexpected error querying npmjs for ${version}:" >&2
             printf '%s\n' "$view_out" >&2
