@@ -174,9 +174,7 @@ PRs, items with milestones, and items labeled `keep-open`, `security`, or
 
 Dependabot opens weekly grouped PRs for GitHub Actions and npm dependencies.
 CI runs `npm audit --omit=dev` on every pull request as the `npm dependency
-vulnerabilities` check. The check covers runtime dependencies only — the
-semantic-release dev tree has advisories whose sole fixes are breaking
-downgrades.
+vulnerabilities` check. The check covers runtime dependencies only.
 
 ## SonarQube analysis
 
@@ -194,11 +192,12 @@ first successful scan.
 
 ## Releasing
 
-Releases are automated via semantic-release:
+Releases are event-driven — publishing never happens on pushes to main:
 
-1. Merge PR to main
-2. CI analyzes commit messages and determines version bump
-3. Publishes to npm automatically
-4. Creates GitHub release
-
-No manual version bumping needed - just use conventional commits!
+1. Ensure `main` is green
+2. `gh release create vX.Y.Z --target main --generate-notes`
+3. The `Publish release` job in the `CI` workflow triggers on the release
+   event, stamps the tag version, publishes to npmjs via trusted publishing
+   (OIDC with provenance), and mirrors the same version to GitHub Packages
+4. Re-running the job is safe — both publishes skip versions that already
+   exist

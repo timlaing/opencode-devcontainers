@@ -79,7 +79,7 @@ jobs:
             -Dsonar.projectKey=timlaing_opencode-devcontainers
             -Dsonar.organization=timlaing
             -Dsonar.projectName=opencode-devcontainers
-            -Dsonar.sources=plugin,install.sh,.releaserc.cjs,.devcontainer,.github/workflows
+            -Dsonar.sources=plugin,install.sh,.devcontainer,.github/workflows
             -Dsonar.tests=test
             -Dsonar.javascript.lcov.reportPaths=lcov.info
             -Dsonar.qualitygate.wait=true
@@ -92,7 +92,7 @@ jobs:
             -Dsonar.projectKey=timlaing_opencode-devcontainers
             -Dsonar.organization=timlaing
             -Dsonar.projectName=opencode-devcontainers
-            -Dsonar.sources=plugin,install.sh,.releaserc.cjs,.devcontainer,.github/workflows
+            -Dsonar.sources=plugin,install.sh,.devcontainer,.github/workflows
             -Dsonar.tests=test
             -Dsonar.javascript.lcov.reportPaths=lcov.info
             -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}

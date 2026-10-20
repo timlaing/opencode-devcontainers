@@ -85,18 +85,21 @@ whenever `docs/`, `mkdocs.yml`, or the workflow file changes.
 
 ## Releasing
 
-Releases are fully automated by [semantic-release](https://semantic-release.gitbook.io/)
-from the `Release` job on `main`:
+Releases are event-driven, not commit-driven: publishing runs only when a
+GitHub Release is published, never on pushes to `main`.
 
-- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
-  (`feat:`, `fix:`, `docs:`, …) — enforced by CI on PR titles
-- A merge commit containing `feat` or `fix` triggers a new npm release and a
-  GitHub release
-- Publishing uses npm trusted publishing (OIDC) with provenance — no long-lived
-  npm tokens
+- Cut a release from a green `main`:
 
-The first release of this fork starts at `1.0.0` under the
-`@timlaing/opencode-devcontainers` name.
+  ```sh
+  gh release create vX.Y.Z --target main --generate-notes
+  ```
+
+- The `Publish release` job in the `CI` workflow stamps the tag version,
+  publishes to npmjs with trusted publishing (OIDC + provenance — no
+  long-lived npm tokens), and mirrors the same version to GitHub Packages
+- Draft and prerelease releases are ignored; stable `vX.Y.Z` is the channel
+- Re-running the publish job is safe: each registry skips a version that is
+  already published
 
 ## Pull requests
 
