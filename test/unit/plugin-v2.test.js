@@ -45,7 +45,7 @@ afterEach(teardownEnv)
 // ============ Fake plugin context ============
 
 /** Fake V2 plugin ctx capturing transform/hook registrations */
-function makeFakeCtx({ sessions = [], prompts = [] } = {}) {
+function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false } = {}) {
   const tools = []
   const hooks = []
   const commands = []
@@ -56,7 +56,9 @@ function makeFakeCtx({ sessions = [], prompts = [] } = {}) {
     },
     options: {},
     session: {
-      list: async () => ({ data: sessions }),
+      // V2's ctx.session.list() returns a bare array; older/newer shapes
+      // returned { data }. rawSessionList exercises the V2 shape.
+      list: rawSessionList ? async () => sessions : async () => ({ data: sessions }),
       prompt: async (input) => { prompts.push(input); return {} },
     },
     command: {
@@ -155,6 +157,30 @@ describeIfPosix('setup registrations', () => {
     assert.ok(kept, 'active session file kept')
     const removed = await waitFor(() => !existsSync(join(testDir, 'sessions', `${stale}.json`)))
     assert.ok(removed, 'stale session file removed')
+  })
+
+  test('handles ctx.session.list returning a bare array (V2 shape)', async () => {
+    const sessionID = sid('init-array-keep')
+    const stale = sid('init-array-stale')
+    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/keep' })
+    writeSessionFile(stale, { workspace: '/ws/stale' })
+
+    // The V2 list() shape is a bare SessionInfo[] — a shape mismatch must
+    // never be mistaken for "no active sessions" and delete everything
+    const fake = makeFakeCtx({ sessions: [{ id: sessionID }], rawSessionList: true })
+    await setup(fake.ctx)
+
+    const kept = await waitFor(() => existsSync(join(testDir, 'sessions', `${sessionID}.json`)))
+    assert.ok(kept, 'active session survives the array-shaped list')
+    const removed = await waitFor(() => !existsSync(join(testDir, 'sessions', `${stale}.json`)))
+    assert.ok(removed, 'stale session file removed')
+  })
+
+  test('devcontainer tool declares its permission key', async () => {
+    const { tools } = await setupV2()
+    const dc = toolByName(tools, 'devcontainer')
+    assert.ok(dc, 'devcontainer registered')
+    assert.strictEqual(dc.permission, 'devcontainer')
   })
 })
 
@@ -433,7 +459,7 @@ describeIfPosix('execute.before hook (V2)', () => {
     assert.strictEqual(event.input, 'npm test')
   })
 
-  test('sets workdir for worktree sessions (V1-migrated state)', async () => {
+  test('leaves V1-migrated worktree sessions alone (V2 has native worktrees)', async () => {
     const sessionID = sid('v2-hook-wt')
     saveSession(sessionID, { type: 'worktree', repoName: 'repo', branch: 'feat', workspace: '/ws/wt' })
 
@@ -442,7 +468,7 @@ describeIfPosix('execute.before hook (V2)', () => {
       sessionID,
       input: { command: 'npm test' },
     })
-    assert.strictEqual(event.input.workdir, '/ws/wt')
+    assert.strictEqual(event.input.workdir, undefined, 'stale V1 worktree state must not reroute commands')
     assert.strictEqual(event.input.command, 'npm test', 'command not wrapped')
   })
 

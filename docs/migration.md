@@ -76,6 +76,19 @@ config directory. Under V2 it registers the `/devcontainer` command directly
 via the plugin API — nothing is written to your config directory, and stale
 copies of the old command files are no longer installed.
 
+If you used the V1 plugin before upgrading, delete the command files it
+installed so the obsolete `/worktree` and `/workspaces` commands (and a
+duplicate `/devcontainer`) do not linger as user commands in V2:
+
+```sh
+rm -f ~/.config/opencode/command/devcontainer.md \
+      ~/.config/opencode/command/worktree.md \
+      ~/.config/opencode/command/workspaces.md
+```
+
+Only remove these files if they came from the plugin — if you authored your
+own commands with these names, keep them.
+
 ## Support policy
 
 | OpenCode     | Supported package version                   | Notes                                      |

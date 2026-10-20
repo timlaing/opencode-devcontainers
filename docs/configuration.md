@@ -26,6 +26,26 @@ Docker when available, otherwise Podman. A Podman runtime requires either
 reports an unsupported configuration when neither is available. Set both paths
 explicitly to use nonstandard executable locations.
 
+## Tool permissions (V2)
+
+The V2 `devcontainer` tool declares the permission key `devcontainer`, so you
+can require explicit approval before it runs — including remove operations —
+through OpenCode's permission configuration:
+
+```json
+{
+  "permission": {
+    "devcontainer": "ask"
+  }
+}
+```
+
+The remove flow always shows its warnings (uncommitted changes, other active
+sessions) before doing anything, but those confirmations happen in the chat
+and are enforced by the model. Gating the tool itself with a permission is the
+independently enforced option if you want a user-approval step that the model
+cannot skip.
+
 ## Environment variables
 
 Override the default locations (mainly useful for testing or unusual setups):

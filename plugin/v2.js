@@ -30,8 +30,14 @@ function devcontainerCommandBody() {
 export async function setup(ctx) {
   // Cleanup stale sessions (don't block on slow API)
   void runWithTimeout(
-    () => cleanupStaleSessions(async () =>
-      ((await ctx.session.list()).data || []).map(s => s.id)),
+    () => cleanupStaleSessions(async () => {
+      // V2's ctx.session.list() returns a bare array; older/newer shapes
+      // returned { data }. Handle both — an unexpected shape must never
+      // make cleanup see zero active sessions and delete them all.
+      const listed = await ctx.session.list()
+      const sessions = Array.isArray(listed) ? listed : (listed?.data ?? [])
+      return sessions.map((s) => s.id)
+    }),
     INIT_TIMEOUT_MS
   )
 
@@ -77,6 +83,10 @@ export async function setup(ctx) {
     editor.add({
       name: "devcontainer",
       description: "Set active devcontainer for this session. Use 'off' to disable. Set create=true to create a new workspace if it doesn't exist.",
+      // Declares the `devcontainer` permission key so users can require
+      // explicit approval (including for rm) via OpenCode's permission
+      // configuration — see docs/configuration.md
+      permission: "devcontainer",
       input: {
         type: "object",
         properties: {
@@ -115,6 +125,9 @@ export async function setup(ctx) {
       sessionID: event.sessionID,
       command: input.command,
       workdir: input.workdir,
+      // V2 has native worktrees: a persisted V1 worktree session is stale
+      // state and must not reroute commands into the legacy workspace
+      allowWorktreeSessions: false,
     })
     if (!result) return
     if (result.command !== undefined) input.command = result.command

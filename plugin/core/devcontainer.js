@@ -17,7 +17,7 @@ import { allocatePort, releasePort, readPorts, getContainerPort, updatePortAlloc
 import { generateOverrideConfig, getOverridePath, loadUserConfig } from './config.js'
 import { createClone, getClonePath, removeClone } from './clones.js'
 import { getCurrentBranch, getRepoRoot } from './git.js'
-import { startJob, updateJob, JOB_STATUS, removeJob } from './jobs.js'
+import { startJob, updateJob, JOB_STATUS, removeJob, getJob } from './jobs.js'
 import { sanitizeDockerFilterValue } from './docker-filter.js'
 
 /**
@@ -276,6 +276,10 @@ export async function up(workspaceOrBranch, options = {}) {
   }
 }
 
+// Workspaces with a background start currently in flight, so a duplicate
+// target reuses the running job instead of racing a second clone/start
+const inflightStarts = new Set()
+
 /**
  * Start a devcontainer in the background (non-blocking)
  * 
@@ -342,12 +346,25 @@ export async function upBackground(workspaceOrBranch, options = {}) {
     }
   }
 
-  // Create job entry with pending status
-  await startJob(workspace, repoName, branch)
+  // Reuse an in-flight start for this workspace instead of racing a second
+  // clone/start over the same job record. has+add run synchronously, so two
+  // concurrent calls cannot both pass the check.
+  if (inflightStarts.has(workspace)) {
+    return { workspace, repo: repoName, branch }
+  }
+  inflightStarts.add(workspace)
 
-  // Start the actual up() in the background (fire-and-forget)
-  // The job status will be updated as it progresses
-  runUpInBackground(workspaceOrBranch, workspace, options)
+  try {
+    // Create job entry with pending status
+    await startJob(workspace, repoName, branch)
+
+    // Start the actual up() in the background (fire-and-forget)
+    // The job status will be updated as it progresses
+    runUpInBackground(workspaceOrBranch, workspace, repoName, branch, options)
+  } catch (err) {
+    inflightStarts.delete(workspace)
+    throw err
+  }
 
   return {
     workspace,
@@ -362,9 +379,11 @@ export async function upBackground(workspaceOrBranch, options = {}) {
  * 
  * @param {string} workspaceOrBranch - Original input (branch or path)
  * @param {string} workspace - Resolved workspace path
+ * @param {string} repoName - Repository name (for undo teardown)
+ * @param {string} branch - Branch name (for undo teardown)
  * @param {object} options - Options to pass to up()
  */
-function runUpInBackground(workspaceOrBranch, workspace, options) {
+function runUpInBackground(workspaceOrBranch, workspace, repoName, branch, options) {
   // Run async but don't await - this is intentionally fire-and-forget
   (async () => {
     try {
@@ -377,17 +396,48 @@ function runUpInBackground(workspaceOrBranch, workspace, options) {
         noOpen: true,
       })
       
+      // If the workspace was removed while the start was in flight, tear
+      // down whatever the start created instead of leaving untracked
+      // resources behind (the removal reported success before we finished)
+      if (!(await getJob(workspace))) {
+        await undoRemovedStart(workspace, repoName, branch)
+        return
+      }
+      
       // Update job to completed with port info
       await updateJob(workspace, JOB_STATUS.COMPLETED, {
         port: result.port,
       })
     } catch (err) {
+      if (!(await getJob(workspace))) {
+        await undoRemovedStart(workspace, repoName, branch)
+        return
+      }
       // Update job to failed with error message
       await updateJob(workspace, JOB_STATUS.FAILED, {
         error: err.message,
       })
+    } finally {
+      inflightStarts.delete(workspace)
     }
   })()
+}
+
+/**
+ * Best-effort teardown when a workspace was removed while its start was
+ * still in flight.
+ *
+ * @param {string} workspace - Workspace path
+ * @param {string} repoName - Repository name
+ * @param {string} branch - Branch name
+ * @returns {Promise<void>}
+ */
+async function undoRemovedStart(workspace, repoName, branch) {
+  try {
+    await remove(workspace, repoName, branch)
+  } catch {
+    // Best-effort: the original removal already reported its own outcome
+  }
 }
 
 /**

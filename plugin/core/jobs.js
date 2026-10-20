@@ -11,6 +11,7 @@ import { readFile, writeFile, mkdir, rename } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { PATHS } from './paths.js'
+import { withLock } from './ports.js'
 
 /**
  * Job status constants
@@ -88,20 +89,24 @@ export async function writeJobs(jobs) {
  * @returns {Promise<Object>} The created job
  */
 export async function startJob(workspace, repo, branch) {
-  const jobs = await readJobs()
-  
-  const job = {
-    workspace,
-    repo,
-    branch,
-    status: JOB_STATUS.PENDING,
-    startedAt: new Date().toISOString(),
-  }
-  
-  jobs[workspace] = job
-  await writeJobs(jobs)
-  
-  return job
+  // Read-modify-write under the jobs lock so concurrent job updates
+  // cannot overwrite each other's snapshot of jobs.json
+  return withLock(join(PATHS.cache, 'jobs'), async () => {
+    const jobs = await readJobs()
+    
+    const job = {
+      workspace,
+      repo,
+      branch,
+      status: JOB_STATUS.PENDING,
+      startedAt: new Date().toISOString(),
+    }
+    
+    jobs[workspace] = job
+    await writeJobs(jobs)
+    
+    return job
+  })
 }
 
 /**
@@ -113,26 +118,28 @@ export async function startJob(workspace, repo, branch) {
  * @returns {Promise<Object|null>} Updated job or null if not found
  */
 export async function updateJob(workspace, status, extra = {}) {
-  const jobs = await readJobs()
-  
-  if (!jobs[workspace]) {
-    return null
-  }
-  
-  jobs[workspace] = {
-    ...jobs[workspace],
-    status,
-    ...extra,
-  }
-  
-  // Add completedAt for terminal states
-  if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.FAILED) {
-    jobs[workspace].completedAt = new Date().toISOString()
-  }
-  
-  await writeJobs(jobs)
-  
-  return jobs[workspace]
+  return withLock(join(PATHS.cache, 'jobs'), async () => {
+    const jobs = await readJobs()
+    
+    if (!jobs[workspace]) {
+      return null
+    }
+    
+    jobs[workspace] = {
+      ...jobs[workspace],
+      status,
+      ...extra,
+    }
+    
+    // Add completedAt for terminal states
+    if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.FAILED) {
+      jobs[workspace].completedAt = new Date().toISOString()
+    }
+    
+    await writeJobs(jobs)
+    
+    return jobs[workspace]
+  })
 }
 
 /**
@@ -153,11 +160,13 @@ export async function getJob(workspace) {
  * @returns {Promise<boolean>} True if job existed and was removed, false if not found
  */
 export async function removeJob(workspace) {
-  const jobs = await readJobs()
-  if (!jobs[workspace]) return false
-  delete jobs[workspace]
-  await writeJobs(jobs)
-  return true
+  return withLock(join(PATHS.cache, 'jobs'), async () => {
+    const jobs = await readJobs()
+    if (!jobs[workspace]) return false
+    delete jobs[workspace]
+    await writeJobs(jobs)
+    return true
+  })
 }
 
 /**
@@ -174,32 +183,36 @@ export async function cleanupJobs(options = {}) {
     failedMaxAgeMs = 24 * 60 * 60 * 1000,    // 24 hours
   } = options
   
-  const jobs = await readJobs()
-  const now = Date.now()
-  let removed = 0
-  
-  for (const [workspace, job] of Object.entries(jobs)) {
-    // Only clean up terminal states
-    if (job.status !== JOB_STATUS.COMPLETED && job.status !== JOB_STATUS.FAILED) {
-      continue
+  // Locked so a job created while this scan runs cannot be wiped by a
+  // snapshot taken before it existed
+  return withLock(join(PATHS.cache, 'jobs'), async () => {
+    const jobs = await readJobs()
+    const now = Date.now()
+    let removed = 0
+    
+    for (const [workspace, job] of Object.entries(jobs)) {
+      // Only clean up terminal states
+      if (job.status !== JOB_STATUS.COMPLETED && job.status !== JOB_STATUS.FAILED) {
+        continue
+      }
+      
+      const completedAt = job.completedAt ? new Date(job.completedAt).getTime() : 0
+      const age = now - completedAt
+      
+      const maxAge = job.status === JOB_STATUS.COMPLETED ? completedMaxAgeMs : failedMaxAgeMs
+      
+      if (age > maxAge) {
+        delete jobs[workspace]
+        removed++
+      }
     }
     
-    const completedAt = job.completedAt ? new Date(job.completedAt).getTime() : 0
-    const age = now - completedAt
-    
-    const maxAge = job.status === JOB_STATUS.COMPLETED ? completedMaxAgeMs : failedMaxAgeMs
-    
-    if (age > maxAge) {
-      delete jobs[workspace]
-      removed++
+    if (removed > 0) {
+      await writeJobs(jobs)
     }
-  }
-  
-  if (removed > 0) {
-    await writeJobs(jobs)
-  }
-  
-  return removed
+    
+    return removed
+  })
 }
 
 export default {

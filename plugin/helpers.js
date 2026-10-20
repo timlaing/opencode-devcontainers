@@ -1,11 +1,25 @@
 import { 
   readFileSync, writeFileSync, mkdirSync, existsSync, 
   readdirSync, unlinkSync, statSync 
-} from "fs"
-import { join, basename } from "path"
-import { execSync } from "child_process"
+} from "node:fs"
+import { join, basename, relative, isAbsolute, sep } from "node:path"
+import { execSync } from "node:child_process"
 
 // ============ Utility Functions ============
+
+/**
+ * Check that a path is strictly inside a parent directory.
+ * Boundary-aware: '/ws' does not contain '/ws-sibling', and '..' segments
+ * that resolve outside the parent are rejected.
+ *
+ * @param {string} parentDir - Containing directory (absolute)
+ * @param {string} childPath - Path to test (absolute)
+ * @returns {boolean}
+ */
+export function isInside(parentDir, childPath) {
+  const rel = relative(parentDir, childPath)
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
 
 /**
  * Wraps a promise with a timeout. If the promise doesn't resolve within
@@ -82,6 +96,10 @@ export const HOST_COMMANDS = [
 
 // In-memory cache to avoid repeated file reads on every bash command
 const sessionCache = new Map()
+// In-process save counter; attached to cached session objects only (never
+// persisted) so saveSessionIfCurrent can detect a save that landed in the
+// same millisecond as the baseline it was given
+let sessionSaveSeq = 0
 
 function getSessionFile(sessionID) {
   return join(getSessionsDir(), `${sessionID}.json`)
@@ -112,8 +130,8 @@ export function saveSession(sessionID, state) {
     activatedAt: new Date().toISOString()
   }
   writeFileSync(getSessionFile(sessionID), JSON.stringify(session, null, 2))
-  // Update cache
-  sessionCache.set(sessionID, session)
+  // Update cache with the change marker (cache-only; the file stays clean)
+  sessionCache.set(sessionID, { ...session, _seq: ++sessionSaveSeq })
 }
 
 export function deleteSession(sessionID) {
@@ -123,6 +141,42 @@ export function deleteSession(sessionID) {
   }
   // Clear from cache
   sessionCache.delete(sessionID)
+}
+
+/**
+ * Drop cached session state for every session targeting a workspace.
+ * Core cleanup (remove()) deletes session files only; this clears the
+ * in-process cache so removed workspaces stop routing commands.
+ *
+ * @param {string} workspace - Workspace path
+ */
+export function invalidateSessionCache(workspace) {
+  for (const [sessionID, session] of sessionCache) {
+    if (session?.workspace === workspace) {
+      sessionCache.delete(sessionID)
+    }
+  }
+}
+
+/**
+ * Save session state only if the session is unchanged since `baseline`
+ * was taken (compared by the cache-only _seq change marker, so saves in
+ * the same millisecond are still detected). Guards against a slow async
+ * result overwriting a newer target, or recreating state after `off`
+ * deleted it.
+ *
+ * @param {string} sessionID - Session ID
+ * @param {object|null} baseline - Session state captured before the await
+ * @param {object} state - New state to save
+ * @returns {boolean} true if saved, false if the session changed meanwhile
+ */
+export function saveSessionIfCurrent(sessionID, baseline, state) {
+  const current = loadSession(sessionID)
+  const baselineSeq = baseline?._seq ?? null
+  const currentSeq = current?._seq ?? null
+  if (baselineSeq !== currentSeq) return false
+  saveSession(sessionID, state)
+  return true
 }
 
 // ============ Workspace Resolution ============
@@ -142,7 +196,10 @@ export function resolveWorkspace(branchArg) {
   // If repo specified, look directly
   if (repoName) {
     const clonePath = join(clonesDir, repoName, branch)
-    if (existsSync(clonePath)) return { workspace: clonePath, repoName, branch }
+    // isInside rejects '..' segments that would escape the clones directory
+    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
+      return { workspace: clonePath, repoName, branch }
+    }
     return null
   }
   
@@ -154,7 +211,9 @@ export function resolveWorkspace(branchArg) {
     }).trim()
     repoName = basename(gitRoot)
     const clonePath = join(clonesDir, repoName, branch)
-    if (existsSync(clonePath)) return { workspace: clonePath, repoName, branch }
+    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
+      return { workspace: clonePath, repoName, branch }
+    }
   } catch {}
   
   // Search all repos for this branch
@@ -168,7 +227,7 @@ export function resolveWorkspace(branchArg) {
       } catch { continue }
       
       const clonePath = join(repoPath, branch)
-      if (existsSync(clonePath)) {
+      if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
         matches.push({ workspace: clonePath, repoName: repo, branch })
       }
     }
@@ -200,7 +259,8 @@ export function resolveWorktreeWorkspace(branchArg) {
   // If repo specified, look directly
   if (repoName) {
     const worktreePath = join(worktreesDir, repoName, branch)
-    if (existsSync(worktreePath)) {
+    // isInside rejects '..' segments that would escape the worktrees directory
+    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
       // Read .git file to get main repo path
       const mainRepo = getMainRepoFromWorktree(worktreePath)
       return { workspace: worktreePath, repoName, branch, mainRepo, repo: repoName }
@@ -216,7 +276,7 @@ export function resolveWorktreeWorkspace(branchArg) {
     }).trim()
     repoName = basename(gitRoot)
     const worktreePath = join(worktreesDir, repoName, branch)
-    if (existsSync(worktreePath)) {
+    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
       return { workspace: worktreePath, repoName, branch, mainRepo: gitRoot, repo: repoName }
     }
   } catch {}
@@ -232,7 +292,7 @@ export function resolveWorktreeWorkspace(branchArg) {
       } catch { continue }
       
       const worktreePath = join(repoPath, branch)
-      if (existsSync(worktreePath)) {
+      if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
         const mainRepo = getMainRepoFromWorktree(worktreePath)
         matches.push({ workspace: worktreePath, repoName: repo, branch, mainRepo, repo })
       }

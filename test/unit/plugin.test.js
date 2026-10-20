@@ -27,6 +27,8 @@ import { execFileSync } from 'child_process'
 import { devcontainers } from '../../plugin/index.js'
 import { getOverridePath } from '../../plugin/core/config.js'
 import { JOB_STATUS } from '../../plugin/core/jobs.js'
+import { cleanupStaleSessions } from '../../plugin/handlers.js'
+import { loadSession } from '../../plugin/helpers.js'
 
 // Shared hermetic harness (testDir/fakeBin are live bindings)
 import {
@@ -291,6 +293,33 @@ describeIfPosix('devcontainer tool', () => {
     assert.match(result, /npm install -g/)
   })
 
+  test('off works without the devcontainer CLI', async () => {
+    process.env.PATH = join(testDir, 'empty-bin')
+    mkdirSync(process.env.PATH, { recursive: true })
+
+    const sessionID = sid('off-no-cli')
+    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/off-no-cli' })
+
+    const plugin = await makePlugin()
+    const result = await plugin.tool.devcontainer.execute({ target: 'off' }, { sessionID })
+    assert.doesNotMatch(result, /CLI not found/, 'off is session-only and needs no CLI')
+    assert.match(result, /Devcontainer mode disabled/)
+    assert.strictEqual(loadSession(sessionID), null, 'session cleared')
+  })
+
+  test('rm works without the devcontainer CLI', async () => {
+    process.env.PATH = join(testDir, 'empty-bin')
+    mkdirSync(process.env.PATH, { recursive: true })
+
+    const plugin = await makePlugin()
+    const result = await plugin.tool.devcontainer.execute(
+      { target: 'rm all' },
+      { sessionID: sid('rm-no-cli') }
+    )
+    assert.doesNotMatch(result, /CLI not found/, 'rm needs docker (validated by core), not the devcontainer CLI')
+    assert.match(result, /No devcontainers to clean up/)
+  })
+
   test('status: no session', async () => {
     const plugin = await makePlugin()
     const result = await plugin.tool.devcontainer.execute({}, { sessionID: sid('status-none') })
@@ -522,6 +551,31 @@ describeIfPosix('devcontainer tool', () => {
     const jobs = JSON.parse(readFileSync(join(testDir, 'cache', 'jobs.json'), 'utf-8'))
     assert.ok(!jobs[orphanWs], 'orphan job entry removed')
     assert.ok(!jobs['/ws/other-job'], 'job-only entry removed')
+  })
+
+  test('rm: clears cached session state for the removed workspace', async () => {
+    const sessionID = sid('rmcache-current')
+    const otherID = sid('rmcache-other')
+    const cloneWs = join(testDir, 'clones', 'rmcache', 'rmbr')
+    makeGitRepo(cloneWs)
+
+    saveSession(sessionID, { repoName: 'rmcache', branch: 'rmbr', workspace: cloneWs })
+    saveSession(otherID, { repoName: 'rmcache', branch: 'rmbr', workspace: cloneWs })
+    // Prime the in-process cache for the other session
+    assert.ok(loadSession(otherID), 'other session cached')
+
+    const plugin = await makePlugin()
+    const result = await plugin.tool.devcontainer.execute(
+      { target: 'rm rmcache/rmbr', confirmed: true },
+      { sessionID }
+    )
+    assert.match(result, /Removed devcontainer: rmcache\/rmbr/)
+
+    // Core cleanup deleted the session files; the in-process cache must be
+    // invalidated too, or loadSession keeps routing the other session to the
+    // removed workspace
+    assert.ok(!existsSync(join(testDir, 'sessions', `${otherID}.json`)), 'session file removed')
+    assert.strictEqual(loadSession(otherID), null, 'cached state invalidated')
   })
 
   test('target: starts a new container in the background for an unknown branch', async () => {
@@ -838,6 +892,34 @@ describeIfPosix('workspaces tool', () => {
   })
 })
 
+// ============ cleanupStaleSessions (shared handler) ============
+
+describeIfPosix('cleanupStaleSessions', () => {
+  test('keeps a session saved after the initial snapshot', async () => {
+    const sessionID = sid('stale-revalidated')
+    writeSessionFile(sessionID, { workspace: '/ws/x' })
+
+    let calls = 0
+    await cleanupStaleSessions(async () => {
+      calls++
+      // First call is the snapshot (session not yet active); the
+      // pre-unlink revalidation sees it as live
+      return calls === 1 ? [] : [sessionID]
+    })
+
+    assert.ok(existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'session kept')
+  })
+
+  test('removes sessions absent from every live check', async () => {
+    const sessionID = sid('stale-gone')
+    writeSessionFile(sessionID, { workspace: '/ws/x' })
+
+    await cleanupStaleSessions(async () => [])
+
+    assert.ok(!existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'session removed')
+  })
+})
+
 // ============ tool.execute.before (bash interception) ============
 
 describeIfPosix('tool.execute.before', () => {
@@ -870,6 +952,27 @@ describeIfPosix('tool.execute.before', () => {
     const plugin = await makePlugin()
     const output = await intercept(plugin, { sessionID, command: 'echo hi', workdir: '/somewhere/else' })
     assert.strictEqual(output.args.command, 'echo hi', 'command unchanged')
+  })
+
+  test('ignores when workdir is a sibling sharing the workspace prefix', async () => {
+    const sessionID = sid('hook-sibling')
+    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/x' })
+
+    const plugin = await makePlugin()
+    const output = await intercept(plugin, { sessionID, command: 'npm test', workdir: '/ws/x-evil' })
+    assert.strictEqual(output.args.command, 'npm test', 'prefix sibling is outside the workspace')
+  })
+
+  test('intercepts when workdir equals or lies inside the workspace', async () => {
+    const sessionID = sid('hook-inside')
+    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/x' })
+
+    const plugin = await makePlugin()
+    const equal = await intercept(plugin, { sessionID, command: 'npm test', workdir: '/ws/x' })
+    assert.match(equal.args.command, /devcontainer exec/, 'exact workspace path intercepted')
+
+    const nested = await intercept(plugin, { sessionID, command: 'npm test', workdir: '/ws/x/sub' })
+    assert.match(nested.args.command, /devcontainer exec/, 'nested path intercepted')
   })
 
   test('ignores empty commands', async () => {

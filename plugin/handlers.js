@@ -12,6 +12,9 @@ import {
   shouldRunOnHost,
   getSessionsDir,
   shellQuote,
+  isInside,
+  invalidateSessionCache,
+  saveSessionIfCurrent,
 } from "./helpers.js"
 
 import {
@@ -44,9 +47,11 @@ export async function cleanupStaleSessions(listSessionIDs) {
     for (const file of readdirSync(sessionsDir)) {
       if (!file.endsWith(".json")) continue
       const sessionID = file.replace(".json", "")
-      if (!activeIDs.has(sessionID)) {
-        unlinkSync(join(sessionsDir, file))
-      }
+      if (activeIDs.has(sessionID)) continue
+      // Revalidate against the live list right before unlinking: a session
+      // saved after the snapshot above must not be treated as stale
+      if ((await listSessionIDs()).includes(sessionID)) continue
+      unlinkSync(join(sessionsDir, file))
     }
   } catch {}
 }
@@ -169,6 +174,10 @@ export async function handleRemoveSingle(rmArg, sessionID, confirmed) {
   // Run the remove operation
   const summary = await remove(workspace, repoName, branch)
 
+  // Drop cached session state for this workspace — core cleanup removes
+  // session files, but the in-process cache would keep routing commands
+  invalidateSessionCache(workspace)
+
   // Clear current session if it targets this workspace
   const session = loadSession(sessionID)
   if (session && session.workspace === workspace) {
@@ -258,6 +267,7 @@ export async function handleRemoveAll(sessionID, confirmed) {
   await entries.reduce(async (prev, entry) => {
     await prev
     const summary = await remove(entry.workspace, entry.repo, entry.branch)
+    invalidateSessionCache(entry.workspace)
     output += formatRemoveSummary(summary) + '\n'
     totalErrors += summary.errors.length
   }, Promise.resolve())
@@ -349,17 +359,21 @@ function devcontainerOff(sessionID) {
 
 /** Start a not-yet-existing workspace in the background (non-blocking) */
 async function startNewDevcontainer(sessionID, target, shouldCreate) {
+  const baseline = loadSession(sessionID)
   try {
     const result = await upBackground(target, {
       cwd: process.cwd(),
     })
 
-    saveSession(sessionID, {
+    if (!saveSessionIfCurrent(sessionID, baseline, {
       branch: result.branch,
       workspace: result.workspace,
       repoName: result.repo,
       starting: true,  // Mark as starting
-    })
+    })) {
+      return `Container start for ${result.repo}/${result.branch} was requested, ` +
+             `but the session changed while it was starting - use \`/devcontainer\` to check status.`
+    }
 
     return `Starting container for ${result.repo}/${result.branch}...\n` +
            `Workspace: ${result.workspace}\n\n` +
@@ -389,6 +403,7 @@ async function attachDevcontainer(sessionID, resolved, target) {
   }
 
   const { workspace, repoName, branch } = resolved
+  const baseline = loadSession(sessionID)
 
   // Check if container is running
   const isRunning = await isContainerRunning(workspace)
@@ -397,12 +412,15 @@ async function attachDevcontainer(sessionID, resolved, target) {
     try {
       await upBackground(workspace)
 
-      saveSession(sessionID, { 
+      if (!saveSessionIfCurrent(sessionID, baseline, { 
         branch, 
         workspace, 
         repoName,
         starting: true,  // Mark as starting
-      })
+      })) {
+        return `Container start for ${repoName}/${branch} was requested, ` +
+               `but the session changed while it was starting - use \`/devcontainer\` to check status.`
+      }
 
       return `Starting container for ${repoName}/${branch}...\n` +
              `Workspace: ${workspace}\n\n` +
@@ -415,12 +433,15 @@ async function attachDevcontainer(sessionID, resolved, target) {
     }
   }
 
-  // Save session state
-  saveSession(sessionID, {
+  // Save session state (skip if the session changed during the status check)
+  if (!saveSessionIfCurrent(sessionID, baseline, {
     branch,
     workspace,
     repoName,
-  })
+  })) {
+    return `Session changed while targeting ${repoName}/${branch} - ` +
+           `use \`/devcontainer\` to check status.`
+  }
 
   return `Session now targeting: ${repoName}/${branch}\n` +
          `Workspace: ${workspace}\n\n` +
@@ -440,24 +461,13 @@ export async function executeDevcontainerTool(args, ctx) {
   const { target, create, confirmed } = args
   const shouldCreate = create === "true" || create === true
 
-  // Verify devcontainer CLI is installed
-  const hasCli = await checkDevcontainerCli()
-  if (!hasCli) {
-    return "devcontainer CLI not found.\n\nInstall with: `npm install -g @devcontainers/cli`"
-  }
-
-  // Status request (no target)
-  if (!target || target.trim() === "") {
-    return devcontainerStatus(sessionID)
-  }
-
-  // Disable request
+  // Disable request — session-only, works without the devcontainer CLI
   if (target === "off") {
     return devcontainerOff(sessionID)
   }
 
-  // Remove request
-  if (target.startsWith("rm ")) {
+  // Remove request — needs docker (validated by core), not the devcontainer CLI
+  if (target && target.startsWith("rm ")) {
     const rmArg = target.slice(3).trim()
 
     if (!rmArg) {
@@ -469,6 +479,17 @@ export async function executeDevcontainerTool(args, ctx) {
     }
 
     return handleRemoveSingle(rmArg, sessionID, confirmed)
+  }
+
+  // Verify devcontainer CLI is installed (status and start paths use it)
+  const hasCli = await checkDevcontainerCli()
+  if (!hasCli) {
+    return "devcontainer CLI not found.\n\nInstall with: `npm install -g @devcontainers/cli`"
+  }
+
+  // Status request (no target)
+  if (!target || target.trim() === "") {
+    return devcontainerStatus(sessionID)
   }
 
   // Resolve workspace (check if clone already exists)
@@ -567,7 +588,7 @@ async function startingInterception(sessionID, session) {
   return null
 }
 
-export async function interceptShellCommand({ tool, sessionID, command, workdir }) {
+export async function interceptShellCommand({ tool, sessionID, command, workdir, allowWorktreeSessions = true }) {
   // Only intercept shell commands (V1: bash, V2: shell)
   if (tool !== "bash" && tool !== "shell") return null
 
@@ -575,8 +596,10 @@ export async function interceptShellCommand({ tool, sessionID, command, workdir 
   if (!session?.workspace) return null
 
   // If workdir is specified and is not within the workspace, don't intercept
-  // This handles the case where the user/agent is working in a different directory
-  if (workdir && !workdir.startsWith(session.workspace)) {
+  // This handles the case where the user/agent is working in a different directory.
+  // Boundary-aware: a sibling sharing the workspace prefix (/ws vs /ws-sibling)
+  // is not inside the workspace, and the exact workspace path counts as inside.
+  if (workdir && workdir !== session.workspace && !isInside(session.workspace, workdir)) {
     return null
   }
 
@@ -593,9 +616,11 @@ export async function interceptShellCommand({ tool, sessionID, command, workdir 
   // Check if command should run on host
   if (hostCheck) return null
 
-  // Handle worktree sessions - just set workdir, no container wrapping
+  // Handle worktree sessions - just set workdir, no container wrapping.
+  // Under V2 (allowWorktreeSessions: false) a persisted V1 worktree session
+  // is stale state: V2 has native worktrees, so leave the command alone.
   if (session.type === "worktree") {
-    return { workdir: session.workspace }
+    return allowWorktreeSessions ? { workdir: session.workspace } : null
   }
 
   // Handle devcontainer sessions
