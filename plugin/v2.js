@@ -27,6 +27,14 @@ function devcontainerCommandBody() {
   return raw.replace(/^---\n[\s\S]*?\n---\n/, "").trim()
 }
 
+/**
+ * V2 plugin entrypoint (recognized by OpenCode's V2 loader via the
+ * attached `id`). Registers the /devcontainer command, the devcontainer
+ * tools (with the `devcontainer` permission key), and the shell
+ * interception hook against the V2 plugin context.
+ *
+ * @param {object} ctx - V2 plugin context
+ */
 export async function setup(ctx) {
   // Cleanup stale sessions (don't block on slow API)
   void runWithTimeout(

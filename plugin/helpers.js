@@ -46,23 +46,43 @@ export async function runWithTimeout(fn, ms) {
 }
 
 // Directory getters - respect environment variables
+/**
+ * Resolve the cache directory, honoring the OCDC_CACHE_DIR override.
+ *
+ * @returns {string} Absolute path to the plugin cache directory
+ */
 export function getCacheDir() {
   return process.env.OCDC_CACHE_DIR || 
     join(process.env.HOME, ".cache/opencode-devcontainers")
 }
 
+/**
+ * Resolve the session-state directory, honoring OCDC_SESSIONS_DIR.
+ *
+ * @returns {string} Absolute path to the sessions directory
+ */
 export function getSessionsDir() {
   return process.env.OCDC_SESSIONS_DIR || 
     join(getCacheDir(), "opencode-sessions")
 }
 
-// Clones live alongside opencode desktop worktrees for discoverability
+/**
+ * Resolve the clones directory, honoring OCDC_CLONES_DIR. Clones live
+ * alongside opencode desktop worktrees for discoverability.
+ *
+ * @returns {string} Absolute path to the clones directory
+ */
 export function getClonesDir() {
   return process.env.OCDC_CLONES_DIR ||
     join(process.env.HOME, ".local/share/opencode/clone")
 }
 
 // Worktrees directory for non-devcontainer branch isolation
+/**
+ * Resolve the worktrees directory, honoring OCDC_WORKTREES_DIR.
+ *
+ * @returns {string} Absolute path to the worktrees directory
+ */
 export function getWorktreesDir() {
   return process.env.OCDC_WORKTREES_DIR ||
     join(process.env.HOME, ".local/share/opencode/worktree")
@@ -101,10 +121,22 @@ const sessionCache = new Map()
 // same millisecond as the baseline it was given
 let sessionSaveSeq = 0
 
+/**
+ * Build the on-disk path for a session's state file.
+ *
+ * @param {string} sessionID - Session identifier
+ * @returns {string} Absolute path to the session JSON file
+ */
 function getSessionFile(sessionID) {
   return join(getSessionsDir(), `${sessionID}.json`)
 }
 
+/**
+ * Load a session's state, preferring the in-process cache over disk.
+ *
+ * @param {string} sessionID - Session identifier
+ * @returns {object|null} Session state, or null when absent/corrupt
+ */
 export function loadSession(sessionID) {
   // Check cache first
   if (sessionCache.has(sessionID)) {
@@ -122,6 +154,14 @@ export function loadSession(sessionID) {
   }
 }
 
+/**
+ * Persist a session's state and refresh the in-process cache. The
+ * cache-only change marker is stripped before writing so it never
+ * reaches disk.
+ *
+ * @param {string} sessionID - Session identifier
+ * @param {object} state - Session state to persist (activatedAt is set)
+ */
 export function saveSession(sessionID, state) {
   const sessionsDir = getSessionsDir()
   mkdirSync(sessionsDir, { recursive: true })
@@ -138,6 +178,11 @@ export function saveSession(sessionID, state) {
   sessionCache.set(sessionID, { ...session, _seq: ++sessionSaveSeq })
 }
 
+/**
+ * Delete a session's state file and drop it from the cache.
+ *
+ * @param {string} sessionID - Session identifier
+ */
 export function deleteSession(sessionID) {
   const file = getSessionFile(sessionID)
   if (existsSync(file)) {
@@ -198,6 +243,16 @@ function hasTraversalSegments(target) {
   return target.split('/').some((seg) => seg === '.' || seg === '..')
 }
 
+/**
+ * Resolve a user-supplied target (`branch`, `repo/branch`) to an existing
+ * devcontainer workspace. Rejects targets with '.'/'..' segments and
+ * normalizes every join so a target can never escape the clones or
+ * worktrees directories.
+ *
+ * @param {string} branchArg - Branch name or `repo/branch` target
+ * @returns {{workspace: string, repoName: string, branch: string, ambiguous?: boolean, matches?: object[]}|null}
+ *   Resolved workspace, or null when not found
+ */
 export function resolveWorkspace(branchArg) {
   if (hasTraversalSegments(branchArg)) return null
 
@@ -355,6 +410,14 @@ function getMainRepoFromWorktree(worktreePath) {
 
 // ============ Command Classification ============
 
+/**
+ * Classify whether a command must run on the host rather than in the
+ * container, based on the leading command word.
+ *
+ * @param {string} command - Command text to classify
+ * @returns {boolean|"escape"} True for host-bound commands, "escape" for
+ *   the HOST: prefix, false to run inside the container
+ */
 export function shouldRunOnHost(command) {
   if (!command || !command.trim()) return true
   

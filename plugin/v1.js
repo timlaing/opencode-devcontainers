@@ -39,6 +39,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ============ Internal Functions ============
 
+/**
+ * Install the V1 command files (/devcontainer, /worktree, /workspaces)
+ * into the user's config directory if they are missing or stale.
+ * Runs fire-and-forget at init (slow API calls must not block startup).
+ *
+ * @param {object} client - OpenCode V1 SDK client
+ */
 async function installCommands(client) {
   try {
     const paths = await client.path.get()
@@ -97,6 +104,14 @@ function worktreeStatusText(session) {
 
 // ============ Plugin Export ============
 
+/**
+ * V1 plugin entrypoint (function-with-attached-server shape, OpenCode
+ * >= 1.18.29). Registers command files, tools, and the shell
+ * interception hook against the V1 SDK client.
+ *
+ * @param {{ client: object }} ctx - V1 plugin context
+ * @returns {{ server: () => Promise<void> }} Server accessor for older V1 loaders
+ */
 export const devcontainers = async ({ client }) => {
   // Install command files if needed (don't block on slow API)
   void runWithTimeout(() => installCommands(client), INIT_TIMEOUT_MS)

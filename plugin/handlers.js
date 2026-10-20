@@ -137,6 +137,18 @@ export function countOtherSessions(workspace, currentSessionID) {
   return count
 }
 
+/**
+ * Handle `/devcontainer rm <branch>` for a single devcontainer.
+ *
+ * Resolves the target, surfaces pre-removal warnings (uncommitted changes,
+ * other active sessions) unless already confirmed, then removes the
+ * container, image, port allocation, clone, and session state.
+ *
+ * @param {string} rmArg - Branch name or `repo/branch` target
+ * @param {string} sessionID - Session requesting the removal
+ * @param {boolean} [confirmed] - Skip warnings when the user confirmed
+ * @returns {Promise<string>} User-facing result or warning message
+ */
 export async function handleRemoveSingle(rmArg, sessionID, confirmed) {
   // Try to resolve workspace from branch name
   const resolved = resolveWorkspace(rmArg)
@@ -506,13 +518,6 @@ export async function executeDevcontainerTool(args, ctx) {
   return attachDevcontainer(sessionID, resolved, target)
 }
 
-/**
- * Shared executor for the `devcontainer_exec` tool.
- * Returns the user-facing string; entrypoints adapt it to their API shape.
- *
- * @param {{ command: string }} args
- * @param {{ sessionID: string, signal?: AbortSignal }} ctx
- */
 /** If the start job is still settling, return the user-facing message (null to proceed) */
 async function settledStartingExecMessage(sessionID, session) {
   const job = await getJob(session.workspace)
@@ -535,6 +540,14 @@ async function settledStartingExecMessage(sessionID, session) {
   return null
 }
 
+/**
+ * Shared executor for the `devcontainer_exec` tool.
+ * Returns the user-facing string; entrypoints adapt it to their API shape.
+ *
+ * @param {{ command: string }} args
+ * @param {{ sessionID: string, signal?: AbortSignal }} ctx
+ * @returns {Promise<string>} User-facing command output or an error message
+ */
 export async function executeDevcontainerExecTool(args, ctx) {
   const { sessionID, signal } = ctx
   const { command } = args
@@ -591,6 +604,25 @@ async function startingInterception(sessionID, session) {
   return null
 }
 
+/**
+ * Intercept a shell/bash tool call for a session bound to a devcontainer.
+ *
+ * Rewrites the command to run via `devcontainer exec` inside the session's
+ * container (or via git worktree for V1 worktree sessions). Commands whose
+ * workdir lies outside the workspace, host-bound commands, and the HOST:
+ * escape hatch pass through untouched. While the container is still
+ * starting, returns a helpful message instead of a cryptic failure.
+ *
+ * @param {object} params
+ * @param {string} params.tool - Tool name (`bash` or `shell`)
+ * @param {string} params.sessionID - Session the command runs in
+ * @param {string} params.command - Original command text
+ * @param {string} [params.workdir] - Working directory for the command
+ * @param {boolean} [params.allowWorktreeSessions] - V2 passes false: stale
+ *   V1 worktree sessions must not reroute commands under V2
+ * @returns {Promise<{command: string, workdir?: string}|null>} Rewritten
+ *   command, or null to run the original untouched
+ */
 export async function interceptShellCommand({ tool, sessionID, command, workdir, allowWorktreeSessions = true }) {
   // Only intercept shell commands (V1: bash, V2: shell)
   if (tool !== "bash" && tool !== "shell") return null

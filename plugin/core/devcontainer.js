@@ -281,20 +281,6 @@ export async function up(workspaceOrBranch, options = {}) {
 const inflightStarts = new Set()
 
 /**
- * Start a devcontainer in the background (non-blocking)
- * 
- * This function returns immediately after validating the workspace and
- * creating a job entry. The actual container start happens in the background.
- * 
- * Use getJob() to check the status of the background operation.
- * 
- * @param {string} workspaceOrBranch - Workspace path or branch name
- * @param {object} [options]
- * @param {boolean} [options.removeExisting] - Remove existing container
- * @param {string} [options.cwd] - Working directory (for branch resolution)
- * @returns {Promise<{workspace: string, repo: string, branch: string}>}
- */
-/**
  * Resolve the workspace path, repo name, and branch for a background start.
  *
  * @param {string} workspaceOrBranch - Workspace path or branch name
@@ -352,6 +338,22 @@ function assertDevcontainerJson(workspace) {
   }
 }
 
+/**
+ * Start a devcontainer in the background (non-blocking)
+ *
+ * This function returns immediately after validating the workspace and
+ * creating a job entry. The actual container start happens in the background.
+ * A duplicate call for a workspace with a start already in flight reuses
+ * that job instead of racing a second clone/start.
+ *
+ * Use getJob() to check the status of the background operation.
+ *
+ * @param {string} workspaceOrBranch - Workspace path or branch name
+ * @param {object} [options]
+ * @param {boolean} [options.removeExisting] - Remove existing container
+ * @param {string} [options.cwd] - Working directory (for branch resolution)
+ * @returns {Promise<{workspace: string, repo: string, branch: string}>}
+ */
 export async function upBackground(workspaceOrBranch, options = {}) {
   await ensureDirs()
 
