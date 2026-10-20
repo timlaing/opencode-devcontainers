@@ -12,8 +12,12 @@ permissions:
 
 # Never cancel in-flight runs on main: a cancelled release job could leave
 # a published package without its tag/GitHub release. PR runs still cancel.
+# The event name is part of the group because GitHub allows only one pending
+# run per group: a workflow_dispatch run on main would otherwise replace a
+# pending push run, whose release job the dispatch run then skips —
+# stranding that push's release until the next push to main.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
@@ -137,13 +141,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Mirror the released version to GitHub Packages. No if: gate here on
-      # purpose — semantic-release's exit code cannot distinguish "no release
-      # needed" from "release failed" (both are 1), and no step output is
-      # set by the plain CLI. Instead the script itself compares the stamped
-      # package.json version against the committed one (semantic-release's
-      # prepare only stamps on an actual release) and skips cleanly when no
-      # release happened. Authenticated with GITHUB_TOKEN (packages: write);
-      # no provenance, since npm allows only one provenance source per version.
+      # purpose — the plain semantic-release CLI sets no step outputs, and
+      # its exit code cannot decide this either (it exits 0 both when a
+      # release was published and when there was nothing to release; only
+      # failures exit 1). The script decides instead: it compares the
+      # package.json version stamped by semantic-release's prepare against
+      # the committed one, and when there is no stamp it retries the latest
+      # release tag if that version is on npmjs but missing from GitHub
+      # Packages (mirror-failure recovery via job re-run). Authenticated
+      # with GITHUB_TOKEN (packages: write); no provenance, since npm
+      # allows only one provenance source per version.
       - name: Mirror release to GitHub Packages
         run: npm run publish:gh-packages -- --publish
         env:

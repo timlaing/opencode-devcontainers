@@ -44,11 +44,11 @@ export NODE_AUTH_TOKEN=github_pat_...
 
 If your OpenCode install uses a package manager that ignores `.npmrc`
 scope mappings, install the plugin from git instead — no registry auth
-needed:
+needed. OpenCode V1 reads the **singular** `plugin` key:
 
 ```jsonc
 {
-  "plugins": ["github:timlaing/opencode-devcontainers"],
+  "plugin": ["github:timlaing/opencode-devcontainers"],
 }
 ```
 
@@ -70,6 +70,15 @@ options with the object form:
 ```jsonc
 {
   "plugins": [{ "package": "@timlaing/opencode-devcontainers", "options": {} }],
+}
+```
+
+If your package manager ignores `.npmrc` scope mappings, install from git
+instead — V2 reads the plural `plugins` key:
+
+```jsonc
+{
+  "plugins": ["github:timlaing/opencode-devcontainers"],
 }
 ```
 
@@ -106,10 +115,10 @@ V1-only release:
 ```
 
 !!! note "Package rename"
-    `opencode-devcontainers@0.5.1` and earlier were published on npmjs under
-    the unscoped name by the original author (that registry needs no scope
-    mapping). This fork publishes the `@timlaing`-scoped package on npmjs
-    (canonical) and mirrors it to GitHub Packages.
+`opencode-devcontainers@0.5.1` and earlier were published on npmjs under
+the unscoped name by the original author (that registry needs no scope
+mapping). This fork publishes the `@timlaing`-scoped package on npmjs
+(canonical) and mirrors it to GitHub Packages.
 
 ## Dependencies
 
