@@ -11,6 +11,7 @@
 | `plugin/core/`       | Core logic: clones, containers, ports, jobs, worktrees |
 | `plugin/command/`    | V1 command file templates                              |
 | `test/unit/`         | Node test-runner suites + shared harness               |
+| `scripts/`           | End-to-end check against a real V2 runtime             |
 | `docs/`              | MkDocs Material documentation (this site)              |
 
 ## Running the tests
@@ -20,6 +21,7 @@ npm ci
 npm test               # full suite
 npm run test:watch     # watch mode
 npm run test:coverage  # coverage report (lcov in coverage/)
+npm run e2e:v2         # end-to-end check against a real V2 runtime
 ```
 
 The suites are hermetic: external commands (`devcontainer`, `docker`) are
@@ -41,6 +43,32 @@ was validated against OpenCode 2.0.30 (`opencode plugin list` reports the
 plugin's ID); note that `opencode plugin list` on a fresh machine does not
 list project-scoped plugins, which is why CI asserts the entrypoint contract
 directly instead of driving the CLI.
+
+## End-to-end check (V2)
+
+`scripts/e2e-v2.mjs` loads the plugin through OpenCode's real V2 plugin
+loader and drives it over the HTTP API of a sandboxed `opencode serve`
+instance, asserting the behaviors the unit tests' fake context cannot:
+
+- plugin registration (state `active`) and the `/devcontainer` command in
+  the real command registry
+- `POST /session/{id}/command` execution: `$ARGUMENTS` substitution and
+  `ctx.session.prompt` forwarding
+- real agent-loop tool dispatch (`devcontainer`, `devcontainer_exec`) and
+  background container start (clone + shimmed `devcontainer up`)
+- the `execute.before` shell hook rewriting `npm test` into
+  `devcontainer exec ...` (asserted on the tool result, which only the
+  wrapped command can produce)
+- multi-session routing (an unbound session runs on the host, with no
+  leaked session state)
+- stale-session cleanup at init against the real session store, including
+  preservation of active sessions across a server restart
+
+Only external dependencies are faked: a scripted OpenAI-compatible server
+plays the model (canned tool calls, so the check is deterministic, offline,
+and free), and `devcontainer`/`docker` are PATH shims. Every OpenCode
+process runs with a sandboxed `HOME` and `OCDC_*` state directories; the
+script never touches your real OpenCode service or providers.
 
 ## Documentation
 

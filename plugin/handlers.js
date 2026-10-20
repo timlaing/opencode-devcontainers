@@ -33,27 +33,30 @@ import {
 } from "./core/index.js"
 
 /**
- * Remove session files that are no longer present in the running OpenCode
- * instance. `listSessionIDs` returns the live session IDs (V1 and V2 expose
- * different client shapes, so the caller adapts it).
+ * Remove session files for sessions that no longer exist in the running
+ * OpenCode instance. `isActive(sessionID)` resolves `true` for a live
+ * session, `false` for one confirmed absent (V1 adapts `session.list`,
+ * V2 probes with `ctx.session.get`), and throws to abort — any error
+ * aborts cleanup, so an unconfirmed check never deletes a file. Each
+ * candidate is checked immediately before unlinking, so a session saved
+ * concurrently cannot be treated as stale.
+ *
+ * @param {(sessionID: string) => Promise<boolean>} isActive - liveness check
+ * @returns {Promise<void>}
  */
-export async function cleanupStaleSessions(listSessionIDs) {
+export async function cleanupStaleSessions(isActive) {
   const sessionsDir = getSessionsDir()
   if (!existsSync(sessionsDir)) return
 
   try {
-    const activeIDs = new Set(await listSessionIDs())
     const candidates = readdirSync(sessionsDir)
       .filter((file) => file.endsWith(".json"))
       .map((file) => ({ file, sessionID: file.replace(".json", "") }))
-      .filter(({ sessionID }) => !activeIDs.has(sessionID))
 
-    // Revalidate each candidate against the live list right before
-    // unlinking: a session saved after the snapshot above must not be
-    // treated as stale. Sequential via a promise chain.
+    // Sequential via a promise chain.
     await candidates.reduce(async (prev, { file, sessionID }) => {
       await prev
-      if ((await listSessionIDs()).includes(sessionID)) return
+      if (await isActive(sessionID)) return
       unlinkSync(join(sessionsDir, file))
     }, Promise.resolve())
   } catch {}

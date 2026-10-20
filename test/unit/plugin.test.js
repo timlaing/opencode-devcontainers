@@ -895,28 +895,38 @@ describeIfPosix('workspaces tool', () => {
 // ============ cleanupStaleSessions (shared handler) ============
 
 describeIfPosix('cleanupStaleSessions', () => {
-  test('keeps a session saved after the initial snapshot', async () => {
-    const sessionID = sid('stale-revalidated')
+  test('keeps sessions the checker reports live', async () => {
+    const sessionID = sid('stale-live')
     writeSessionFile(sessionID, { workspace: '/ws/x' })
 
-    let calls = 0
-    await cleanupStaleSessions(async () => {
-      calls++
-      // First call is the snapshot (session not yet active); the
-      // pre-unlink revalidation sees it as live
-      return calls === 1 ? [] : [sessionID]
+    const checked = []
+    await cleanupStaleSessions(async (id) => {
+      checked.push(id)
+      return true
     })
 
+    assert.deepStrictEqual(checked, [sessionID], 'checker called per candidate')
     assert.ok(existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'session kept')
   })
 
-  test('removes sessions absent from every live check', async () => {
+  test('removes sessions the checker reports absent', async () => {
     const sessionID = sid('stale-gone')
     writeSessionFile(sessionID, { workspace: '/ws/x' })
 
-    await cleanupStaleSessions(async () => [])
+    await cleanupStaleSessions(async () => false)
 
     assert.ok(!existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'session removed')
+  })
+
+  test('keeps everything when the liveness check throws', async () => {
+    const sessionID = sid('stale-throw')
+    writeSessionFile(sessionID, { workspace: '/ws/x' })
+
+    await cleanupStaleSessions(async () => {
+      throw new Error('session store unavailable')
+    })
+
+    assert.ok(existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'session kept on error')
   })
 })
 

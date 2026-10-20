@@ -45,7 +45,7 @@ afterEach(teardownEnv)
 // ============ Fake plugin context ============
 
 /** Fake V2 plugin ctx capturing transform/hook registrations */
-function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false, listOverride = null } = {}) {
+function makeFakeCtx({ existing = [], getOverride = null, prompts = [] } = {}) {
   const tools = []
   const hooks = []
   const commands = []
@@ -56,11 +56,17 @@ function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false, list
     },
     options: {},
     session: {
-      // V2's ctx.session.list() returns a bare array; older/newer shapes
-      // returned { data }. rawSessionList exercises the V2 shape; a
-      // listOverride fakes malformed shapes (e.g. error payloads).
-      list: listOverride
-        ?? (rawSessionList ? async () => sessions : async () => ({ data: sessions })),
+      // V2's ctx.session has no list(): init cleanup probes liveness with
+      // get({ sessionID }), which resolves for live sessions and rejects
+      // with a Session.NotFoundError-tagged error for stale ones.
+      // getOverride fakes unexpected failures (fail-safe path).
+      get: getOverride
+        ?? (async ({ sessionID }) => {
+          if (existing.includes(sessionID)) return { id: sessionID }
+          const err = new Error('session not found')
+          err._tag = 'Session.NotFoundError'
+          throw err
+        }),
       prompt: async (input) => { prompts.push(input); return {} },
     },
     command: {
@@ -85,7 +91,8 @@ function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false, list
 
 /** Run setup() against a fake ctx; sessions default to this test's registry */
 async function setupV2({ sessions, prompts } = {}) {
-  const fake = makeFakeCtx({ sessions: sessions ?? activeSessions(), prompts })
+  const ids = (sessions ?? activeSessions()).map((s) => (typeof s === 'string' ? s : s.id))
+  const fake = makeFakeCtx({ existing: ids, prompts })
   await setup(fake.ctx)
   return fake
 }
@@ -145,14 +152,14 @@ describeIfPosix('setup registrations', () => {
     assert.ok(hook, 'execute.before hook registered')
   })
 
-  test('reports saved sessions to ctx.session.list so init keeps their files', async () => {
+  test('init cleanup keeps live sessions and removes stale files', async () => {
     const sessionID = sid('init-keep')
     const stale = sid('init-stale')
     saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/keep' })
     writeSessionFile(stale, { workspace: '/ws/stale' })
 
-    // Explicit list keeps only the active session, so the stale file is
-    // removed by init cleanup rather than surviving on the registry
+    // get() resolves only for the live session (Session.NotFoundError for
+    // the stale one), so init cleanup keeps one and removes the other
     await setupV2({ sessions: [{ id: sessionID }] })
 
     const kept = await waitFor(() => existsSync(join(testDir, 'sessions', `${sessionID}.json`)))
@@ -161,15 +168,17 @@ describeIfPosix('setup registrations', () => {
     assert.ok(removed, 'stale session file removed')
   })
 
-  test('skips cleanup on an unexpected session.list() shape', async () => {
+  test('skips cleanup when the session liveness check fails', async () => {
     const sessionID = sid('init-weird-keep')
     const stale = sid('init-weird-stale')
     saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/keep' })
     writeSessionFile(stale, { workspace: '/ws/stale' })
 
-    // A malformed shape (e.g. an error payload) must abort cleanup, never
-    // be mistaken for "no active sessions" and delete everything
-    const fake = makeFakeCtx({ listOverride: async () => ({}) })
+    // An unexpected get() failure (anything but Session.NotFoundError)
+    // must abort cleanup, never be mistaken for "session is gone"
+    const fake = makeFakeCtx({
+      getOverride: async () => { throw new Error('session store unavailable') },
+    })
     await setup(fake.ctx)
 
     await new Promise((resolve) => setTimeout(resolve, 150))
@@ -177,28 +186,18 @@ describeIfPosix('setup registrations', () => {
     assert.ok(existsSync(join(testDir, 'sessions', `${stale}.json`)), 'stale file kept — cleanup skipped')
   })
 
-  test('handles ctx.session.list returning a bare array (V2 shape)', async () => {
-    const sessionID = sid('init-array-keep')
-    const stale = sid('init-array-stale')
-    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/keep' })
-    writeSessionFile(stale, { workspace: '/ws/stale' })
-
-    // The V2 list() shape is a bare SessionInfo[] — a shape mismatch must
-    // never be mistaken for "no active sessions" and delete everything
-    const fake = makeFakeCtx({ sessions: [{ id: sessionID }], rawSessionList: true })
-    await setup(fake.ctx)
-
-    const kept = await waitFor(() => existsSync(join(testDir, 'sessions', `${sessionID}.json`)))
-    assert.ok(kept, 'active session survives the array-shaped list')
-    const removed = await waitFor(() => !existsSync(join(testDir, 'sessions', `${stale}.json`)))
-    assert.ok(removed, 'stale session file removed')
-  })
-
-  test('devcontainer tool declares its permission key', async () => {
+  test('tools are exposed directly and the devcontainer permission key is declared', async () => {
     const { tools } = await setupV2()
     const dc = toolByName(tools, 'devcontainer')
     assert.ok(dc, 'devcontainer registered')
-    assert.strictEqual(dc.permission, 'devcontainer')
+    // codemode: false is what makes the V2 tool snapshot send the tool to
+    // the model directly instead of hiding it behind `execute`
+    assert.strictEqual(dc.options.codemode, false)
+    assert.strictEqual(dc.options.permission, 'devcontainer')
+
+    const exec = toolByName(tools, 'devcontainer_exec')
+    assert.ok(exec, 'devcontainer_exec registered')
+    assert.strictEqual(exec.options.codemode, false)
   })
 })
 

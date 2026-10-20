@@ -38,17 +38,19 @@ function devcontainerCommandBody() {
 export async function setup(ctx) {
   // Cleanup stale sessions (don't block on slow API)
   void runWithTimeout(
-    () => cleanupStaleSessions(async () => {
-      // V2's ctx.session.list() returns a bare array; older/newer shapes
-      // returned { data }. An unexpected shape (e.g. an error payload)
-      // must abort cleanup, never be mistaken for "no active sessions" —
-      // that would delete every session file.
-      const listed = await ctx.session.list()
-      const sessions = Array.isArray(listed) ? listed : listed?.data
-      if (!Array.isArray(sessions)) {
-        throw new TypeError("unexpected session.list() shape; skipping stale-session cleanup")
+    () => cleanupStaleSessions(async (sessionID) => {
+      // V2's ctx.session has no list() in OpenCode 2.0.x, so active
+      // sessions are probed one by one with get(): it resolves for a live
+      // session and rejects with Session.NotFoundError for a stale one.
+      // Any other error aborts cleanup — fail-safe: never delete a file
+      // when liveness cannot be confirmed.
+      try {
+        await ctx.session.get({ sessionID })
+        return true
+      } catch (err) {
+        if (err?._tag === "Session.NotFoundError") return false
+        throw err
       }
-      return sessions.map((s) => s.id)
     }),
     INIT_TIMEOUT_MS
   )
@@ -77,6 +79,10 @@ export async function setup(ctx) {
   await ctx.tool.transform((editor) => {
     editor.add({
       name: "devcontainer_exec",
+      // `codemode: false` exposes the tool directly to the model; V2's
+      // tool snapshot hides any tool without it behind the `execute`
+      // code-mode catalog (verified against the OpenCode 2.0.30 runtime).
+      options: { codemode: false },
       description: "Execute a command in the current devcontainer context. IMPORTANT: Only use this tool when a devcontainer session is active (set via /devcontainer command). For normal shell commands, use the shell tool instead.",
       input: {
         type: "object",
@@ -97,10 +103,13 @@ export async function setup(ctx) {
     editor.add({
       name: "devcontainer",
       description: "Set active devcontainer for this session. Use 'off' to disable. Set create=true to create a new workspace if it doesn't exist.",
-      // Declares the `devcontainer` permission key so users can require
-      // explicit approval (including for rm) via OpenCode's permission
-      // configuration — see docs/configuration.md
-      permission: "devcontainer",
+      // `codemode: false` exposes the tool directly to the model (see
+      // devcontainer_exec above). `options.permission` declares the
+      // `devcontainer` permission key so users can require explicit
+      // approval (including for rm) via OpenCode's permission
+      // configuration — the runtime resolves rules against
+      // `options.permission ?? tool name`; see docs/configuration.md
+      options: { codemode: false, permission: "devcontainer" },
       input: {
         type: "object",
         properties: {

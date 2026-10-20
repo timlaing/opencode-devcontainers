@@ -118,7 +118,7 @@ export const devcontainers = async ({ client }) => {
   
   // Cleanup stale sessions (don't block on slow API)
   void runWithTimeout(
-    () => cleanupStaleSessions(async () => {
+    () => cleanupStaleSessions(async (sessionID) => {
       // The V1 SDK can return { error } without throwing — treat any
       // non-array shape as "skip cleanup" rather than "delete everything"
       const listed = await client.session.list()
@@ -126,7 +126,7 @@ export const devcontainers = async ({ client }) => {
       if (!Array.isArray(sessions)) {
         throw new TypeError("unexpected session.list() shape; skipping stale-session cleanup")
       }
-      return sessions.map(s => s.id)
+      return sessions.some(s => s.id === sessionID)
     }),
     INIT_TIMEOUT_MS
   )
