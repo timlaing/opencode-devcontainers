@@ -34,9 +34,13 @@ directory. The shared harness lives in `test/unit/harness.js`.
   the shell interception hook
 - `test/unit/core.*.test.js` — the core modules
 
-CI also verifies that the combined entrypoint loads as a recognized plugin
-under the current OpenCode V2 release (`opencode plugin list` must report the
-plugin's ID).
+CI also verifies that the combined entrypoint imports cleanly and exposes the
+exact shape OpenCode's V2 loader requires (default export with `id` + `setup`)
+alongside the V1 `server()` entrypoint. Loading in a live OpenCode V2 runtime
+was validated against OpenCode 2.0.30 (`opencode plugin list` reports the
+plugin's ID); note that `opencode plugin list` on a fresh machine does not
+list project-scoped plugins, which is why CI asserts the entrypoint contract
+directly instead of driving the CLI.
 
 ## Documentation
 
