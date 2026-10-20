@@ -106,10 +106,11 @@ jobs:
 
       # Runs unmasked: a failed publish must fail the job (a previous
       # set +e wrapper swallowed semantic-release exit code 1 and hid a
-      # broken release).
+      # broken release). npm run executes the exact devDependency version
+      # installed by `npm ci` from the lockfile — no on-demand install.
       - name: Run semantic-release
         id: semantic
-        run: npx semantic-release
+        run: npm run semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
