@@ -220,7 +220,7 @@ export function setupEnv() {
 }
 
 /** Restore the environment after one test */
-export function teardownEnv() {
+export async function teardownEnv() {
   process.env.PATH = originalPath
   process.chdir(originalCwd)
   delete process.env.HOME
@@ -234,5 +234,19 @@ export function teardownEnv() {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
   }
-  rmSync(testDir, { recursive: true, force: true })
+  // Init cleanup and job cleanup are fire-and-forget by design and may
+  // still be writing (e.g. lock dirs under cache/) when the test finishes —
+  // retry briefly instead of failing the teardown
+  const deadline = Date.now() + 3000
+  for (;;) {
+    try {
+      rmSync(testDir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if ((err.code !== 'ENOTEMPTY' && err.code !== 'EBUSY') || Date.now() > deadline) {
+        throw err
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
 }
