@@ -583,15 +583,6 @@ export async function executeDevcontainerExecTool(args, ctx) {
   }
 }
 
-/**
- * Shared shell-command interception used by the V1 `tool.execute.before` hook
- * and the V2 `ctx.tool.hook("execute.before")`. Matches the V1 `bash` tool
- * and the V2 `shell` tool.
- *
- * @param {{ tool: string, sessionID: string, command?: string, workdir?: string }} input
- * @returns {Promise<{ command?: string, workdir?: string }|null>} rewrites to
- *   apply, or null to leave the call untouched
- */
 /** Starting-container interception: helpful echo, or flag reset on completion */
 async function startingInterception(sessionID, session) {
   const job = await getJob(session.workspace)
