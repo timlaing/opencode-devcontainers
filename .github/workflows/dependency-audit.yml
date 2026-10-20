@@ -37,7 +37,5 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       # Scope to runtime dependencies: only @opencode-ai/plugin ships to
-      # users. The semantic-release dev tree carries advisories whose only
-      # fixes are breaking downgrades, so auditing it would leave this check
-      # permanently red.
+      # users, so the runtime tree is the release surface this check guards.
       - run: npm audit --omit=dev

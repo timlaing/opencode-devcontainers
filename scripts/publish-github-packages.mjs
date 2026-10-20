@@ -2,37 +2,37 @@
 /**
  * Mirror the freshly released package to the GitHub Packages npm registry.
  *
- * semantic-release publishes the canonical version to npmjs (the default
- * registry) from `.releaserc.cjs`, with provenance. That publish is the
+ * The publish job publishes the canonical version to npmjs (the default
+ * registry) via trusted publishing, with provenance. That publish is the
  * source of truth: it carries the version, the git tag, and the GitHub
  * Release. This script runs as a separate step afterward and pushes the
  * *same* version to GitHub Packages, so consumers who resolve the `@timlaing`
  * scope through `npm.pkg.github.com` get an identical artifact.
  *
- * Because semantic-release's `prepare` step has already written the release
- * version into the checked-out package.json, a plain `npm publish` here packs
- * the identical contents — no separate packing logic needed.
+ * Because the publish job stamps the release version (from the release tag)
+ * into the checked-out package.json before running, a plain `npm publish`
+ * here packs the identical contents — no separate packing logic needed.
  *
- * Retry safety: if a mirror publish fails after npmjs already carries the
- * version, a re-run of the job checks out with no stamp (semantic-release
- * will not re-release an existing tag). In that case this script falls back
- * to the latest release tag: when that version is on npmjs but missing from
- * GitHub Packages, it publishes from a detached `git worktree` of the tag,
- * so the retried artifact still matches the released commit exactly.
+ * Retry safety: if a mirror publish fails, re-running the publish job lands
+ * on the already-stamped version and mirrors it; when there is no stamp at
+ * all, the script falls back to the latest release tag: if that version is
+ * on npmjs but missing from GitHub Packages, it publishes from a detached
+ * `git worktree` of the tag, so the retried artifact still matches the
+ * released commit exactly.
  *
- * Auth follows the same mechanism as `@semantic-release/npm`: a temporary
- * `.npmrc` with a `//npm.pkg.github.com/:_authToken` line resolved from
- * `NODE_AUTH_TOKEN` (set to `GITHUB_TOKEN` in CI, which carries the
- * `packages: write` permission). Passing `--userconfig` keeps the `@timlaing`
- * scope mapping in the repo `.npmrc` from hijacking the explicit
- * `--registry`.
+ * Auth is a temporary `.npmrc` with a `//npm.pkg.github.com/:_authToken`
+ * line resolved from `NODE_AUTH_TOKEN` (set to `GITHUB_TOKEN` by the publish
+ * job, which carries the `packages: write` permission). Passing
+ * `--userconfig` keeps the `@timlaing` scope mapping in the repo `.npmrc`
+ * from hijacking the explicit `--registry`.
  *
  * npm allows only one provenance source per version, so this publish omits
  * `--provenance` to stay symmetric with the token-auth npmjs publish.
  *
- * Safety: dry run by default; `--publish` publishes for real. A real publish
- * that finds the version already present fails loudly rather than silently
- * skipping.
+ * Safety: dry run by default; `--publish` publishes for real. An
+ * already-published version is skipped with a log (registry versions are
+ * immutable, so it means a prior run already mirrored it — re-running the
+ * job stays safe); a missing token still fails loudly.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -50,8 +50,9 @@ const NPMJS_REGISTRY = 'https://registry.npmjs.org'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * @returns {{ name: string, version: string }} package identity; in CI the
- *   version is the release version semantic-release wrote during `prepare`.
+ * @returns {{ name: string, version: string }} package identity; in the
+ *   publish job the version is the release version stamped from the release
+ *   tag before this script runs.
  */
 function readPkg() {
   const { name, version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
@@ -97,7 +98,7 @@ function alreadyPublished(name, version, userconfig, token) {
 /**
  * @returns {string | undefined} most recent release tag (for example
  *   `v1.0.0`), or undefined when the repository has no release tags yet or
- *   the newest tag does not match semantic-release's `v<semver>` tag format.
+ *   the newest tag does not match the repo's `v<semver>` release tag format.
  */
 function latestReleaseTag() {
   const out = execFileSync('git', ['tag', '--list', 'v*', '--sort=-version:refname'], {
@@ -137,16 +138,21 @@ function main() {
   const dryRun = !process.argv.includes('--publish')
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? process.env.NODE_AUTH_TOKEN
 
-  // semantic-release's `prepare` only stamps the released version into the
-  // working package.json when a release actually happens. If the working
-  // version still matches the committed one, this run published nothing.
-  // Exit codes cannot tell the two apart: semantic-release's CLI exits 0
-  // both when it released and when there was nothing to release (index.js
-  // returns false without throwing; only errors reach cli.js's catch and
-  // exit 1), so the stamped-vs-committed comparison is the reliable signal.
+  // The publish job stamps the released version (from the release tag) into
+  // the working package.json before running this script; outside that job
+  // the working version equals the committed placeholder. So a working
+  // version different from the committed one means "the publish job just
+  // stamped the version to mirror", and equality means "no stamp" — handled
+  // below by the release-tag fallback. The job also exports RELEASE_TAG,
+  // which is authoritative when present (it removes the equality
+  // ambiguity), and the stamped version must match it.
   const committed = JSON.parse(
     execFileSync('git', ['show', 'HEAD:package.json'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   )
+  const releaseTag = process.env.RELEASE_TAG
+  if (releaseTag && version !== releaseTag.replace(/^v/, '')) {
+    throw new Error(`working package.json version ${version} does not match release tag ${releaseTag}; refusing to mirror`)
+  }
 
   // A real publish needs a token; an empty/absent one would otherwise fail
   // deep inside npm with an opaque auth error.
@@ -169,22 +175,30 @@ function main() {
     // before the setting name is required as much as the trailing slash.
     writeFileSync(userconfig, `${GH_HOST}:_authToken = \${NODE_AUTH_TOKEN}\n`)
 
-    if (committed.version !== version) {
-      // Stamped path: this run just released `version` from this checkout.
-      // Without a token the duplicate check cannot run (GitHub Packages
-      // refuses anonymous reads); that only happens in a dry run, which
-      // publishes nothing, so skipping the guard is safe. `--publish` runs
-      // already threw above when no token was resolved.
+    if (committed.version !== version || releaseTag) {
+      // Stamped path: the publish job stamped the release version into this
+      // checkout before running. RELEASE_TAG (exported by that job) is
+      // authoritative over the version-equality heuristic, which is
+      // ambiguous when the released version happens to equal the committed
+      // placeholder — verify the stamp matches the release tag before
+      // trusting it. Without a token the duplicate check cannot run (GitHub
+      // Packages refuses anonymous reads); that only happens in a dry run,
+      // which publishes nothing, so skipping the guard is safe. `--publish`
+      // runs already threw above when no token was resolved. An
+      // already-mirrored version means a previous run of this job succeeded
+      // — registry versions are immutable, so the mirror invariant holds;
+      // skip with a log so re-running the job is safe.
       if (token && alreadyPublished(name, version, userconfig, token)) {
-        throw new Error(`${name}@${version} already exists on ${GH_PACKAGES_REGISTRY}; refusing to overwrite`)
+        console.log(`[publish-github-packages] ${version} already on ${GH_PACKAGES_REGISTRY}; nothing to mirror`)
+        return
       } else if (!token) {
         console.log('[publish-github-packages] dry run without a token: skipping duplicate-version check')
       }
     } else {
-      // No stamp: this run released nothing. Normally that means there is
-      // nothing to mirror — but it is also what a re-run looks like after a
-      // mirror publish failed following a successful npmjs publish (the tag
-      // was already pushed, so semantic-release does not re-release it).
+      // No stamp: not the publish job (or a run from a checkout without the
+      // stamp). Nothing to mirror in the common case — but the latest
+      // release tag may still be missing from GitHub Packages (for example
+      // after a mirror failure that predated a job re-run with the stamp).
       // Recover that case by mirroring the latest release tag when GitHub
       // Packages lacks it. A tokenless dry run just reports and stops.
       const tag = latestReleaseTag()
@@ -215,8 +229,8 @@ function main() {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       // The tag commits the placeholder version (releases never commit the
-      // stamped version); stamp the tag tree exactly like semantic-release's
-      // prepare did for the canonical publish so the retried artifact is
+      // stamped version); stamp the tag tree exactly like the publish job's
+      // stamp step does for the canonical publish so the retried artifact is
       // byte-identical in identity, not a stray placeholder version.
       const pkgPath = join(worktree, 'package.json')
       const worktreePkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
@@ -232,6 +246,10 @@ function main() {
       GH_PACKAGES_REGISTRY,
       '--access',
       'public',
+      // No lifecycle code runs while publishing (the root package defines
+      // none; this keeps third-party scripts out of the credential-bearing
+      // publish step in CI).
+      '--ignore-scripts',
       '--userconfig',
       userconfig,
       ...(dryRun ? ['--dry-run'] : []),

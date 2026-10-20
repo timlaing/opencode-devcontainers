@@ -5,20 +5,29 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Publishing is event-driven: the Publish release job below runs only when
+  # a GitHub Release is published (Releases UI or `gh release create`), never
+  # on pushes to main. `released` covers promoting a prerelease to stable —
+  # GitHub emits `released` (not `published`) for that transition.
+  release:
+    types: [published, released]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # Never cancel in-flight runs on main: a cancelled release job could leave
-# a published package without its tag/GitHub release. PR runs still cancel.
-# The event name is part of the group because GitHub allows only one pending
-# run per group: a workflow_dispatch run on main would otherwise replace a
-# pending push run, whose release job the dispatch run then skips —
-# stranding that push's release until the next push to main.
+# a published package without its tag/GitHub release. Release-event runs are
+# also never cancelled (their ref is a tag, so the ref test alone would
+# cancel them — and a duplicate release event mid-publish could otherwise
+# kill a run between the npmjs publish and the GitHub Packages mirror).
+# PR runs still cancel. The event name is part of the group because GitHub
+# allows only one pending run per group: a workflow_dispatch run on main
+# would otherwise replace a pending push run, whose release job the dispatch
+# run then skips — stranding that push's release until the next push to main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name != 'release' && github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -75,29 +84,50 @@ jobs:
       - name: Run tests
         run: npm test
 
-  release:
-    name: Release
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  publish:
+    name: Publish release
+    # Event-driven, never push-driven: this job runs only when a GitHub
+    # Release is published for this repository (the Releases UI or
+    # `gh release create vX.Y.Z --target main`, which creates the release
+    # tag as a side effect), or when a prerelease is promoted to stable
+    # (GitHub emits `released` for that, not `published`). A push to main
+    # never publishes anything. Prereleases are skipped — stable vX.Y.Z
+    # releases are the channel.
+    if: github.event_name == 'release' && (github.event.action == 'published' || github.event.action == 'released') && !github.event.release.prerelease
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # semantic-release pushes tags, creates the GitHub release, publishes the
-    # canonical version to npmjs via trusted publishing (OIDC + provenance),
-    # and the follow-up step mirrors it to GitHub Packages. No npm token
-    # secret exists in this job. The test job stays read-only.
+    # Serialize release publishes so `latest` can never regress when two
+    # releases are cut close together: without this, an older release's
+    # publish finishing last would win the `latest` dist-tag.
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
-      contents: write
-      id-token: write   # OIDC for npmjs provenance attestation
+      contents: read
+      id-token: write   # OIDC for npmjs trusted publishing (and provenance)
       packages: write   # Publish to the GitHub Packages npm registry
-      issues: write     # For semantic-release failure reporting
     steps:
-      # persist-credentials is off so no token sits in .git/config while
-      # `npm ci` runs dependency lifecycle scripts; the release step points
-      # origin at GITHUB_TOKEN only after installs are done.
+      # On release events actions/checkout defaults to the release tag, so
+      # the published artifact matches the tagged commit exactly.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Full history so the next step can compare the tag against
+          # origin/main. No credential is persisted: nothing in this job
+          # pushes to the repository, and a token in .git/config would be
+          # readable by any code that runs later in the job.
           fetch-depth: 0
           persist-credentials: false
+
+      # Releases are cut from main (`gh release create ... --target main`);
+      # refuse a tag that points outside main's history so unmerged code can
+      # never reach either registry. Ancestry is resolved from GITHUB_REF
+      # (the release tag itself), not from GITHUB_SHA.
+      - name: Verify the release tag points into main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_REF" origin/main; then
+            echo "release tag $GITHUB_REF_NAME is not reachable from origin/main; refusing to publish unmerged code" >&2
+            exit 1
+          fi
 
       # No registry-url here, deliberately: setup-node would write an
       # .npmrc auth line keyed on NODE_AUTH_TOKEN, and npm skips its native
@@ -116,43 +146,102 @@ jobs:
       - name: Pin npm for trusted publishing support
         run: npm install -g npm@11.21.1 --ignore-scripts
 
+      # --ignore-scripts: no third-party lifecycle code executes in this job.
+      # It runs with `id-token: write` (npm OIDC), so a compromised install
+      # script could otherwise mint publish credentials; the lockfile pins
+      # and integrity hashes cover tarballs, not what their scripts do.
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
-      # Runs unmasked: a failed publish must fail the job (a previous
-      # set +e wrapper swallowed semantic-release exit code 1 and hid a
-      # broken release). npm run executes the exact devDependency version
-      # installed by `npm ci` from the lockfile — no on-demand install.
-      #
-      # Canonical publish: npmjs via trusted publishing (OIDC). No npm token
-      # exists anywhere in this workflow: id-token: write lets the npm CLI
-      # exchange a short-lived OIDC token for publish credentials, validated
-      # against the trusted publisher configured on npmjs.com for this repo
-      # and this exact workflow filename (ci.yml). Setting any NPM_TOKEN /
-      # NODE_AUTH_TOKEN here would suppress OIDC and fail the publish.
-      - name: Run semantic-release
-        id: semantic
-        # Re-inject push credentials now that installs are finished:
-        # semantic-release pushes the release tag through origin's URL.
+      # The release event is independent of the push run's test job, so this
+      # job verifies the tagged tree passes its own suite before anything is
+      # published. Same git identity as the test job (tests create commits
+      # in temp repositories).
+      - name: Configure git for tests
         run: |
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          npm run semantic-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git config --global user.email "ci@test.local"
+          git config --global user.name "CI Test"
 
-      # Mirror the released version to GitHub Packages. No if: gate here on
-      # purpose — the plain semantic-release CLI sets no step outputs, and
-      # its exit code cannot decide this either (it exits 0 both when a
-      # release was published and when there was nothing to release; only
-      # failures exit 1). The script decides instead: it compares the
-      # package.json version stamped by semantic-release's prepare against
-      # the committed one, and when there is no stamp it retries the latest
-      # release tag if that version is on npmjs but missing from GitHub
-      # Packages (mirror-failure recovery via job re-run). Authenticated
-      # with GITHUB_TOKEN (packages: write); no provenance, since npm
-      # allows only one provenance source per version.
-      - name: Mirror release to GitHub Packages
+      - name: Run tests
+        run: npm test
+
+      # package.json commits a placeholder version; the release tag is the
+      # source of truth for what to publish. Stamp the released version into
+      # this checkout (never committed) so both publishes carry it. Only
+      # stable vX.Y.Z tags (with the v prefix, as the docs prescribe) are
+      # released — anything else fails loudly here.
+      - name: Stamp the released version from the tag
+        run: |
+          if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "release tag '$GITHUB_REF_NAME' is not a stable vX.Y.Z tag; refusing to publish" >&2
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          npm pkg set version="$version"
+          echo "Publishing ${GITHUB_REPOSITORY}@${version}"
+
+      # Canonical publish: npmjs via trusted publishing (OIDC) with
+      # provenance. No npm token exists anywhere in this workflow —
+      # id-token: write lets the npm CLI exchange a short-lived OIDC token
+      # for publish credentials, validated against the trusted publisher
+      # configured on npmjs.com for this repo and this exact workflow
+      # filename (ci.yml). Any NPM_TOKEN / NODE_AUTH_TOKEN env here would
+      # suppress OIDC and fail the publish. Idempotent: re-running this job
+      # finds the version already on npmjs and skips — but only a
+      # definitive "not found" falls through to publishing; any other
+      # registry query error fails the job loudly instead of being misread
+      # as "absent".
+      - name: Publish to npmjs (canonical)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          set +e
+          view_out=$(npm view "@${GITHUB_REPOSITORY}@${version}" version 2>&1)
+          view_rc=$?
+          set -e
+          if [ "$view_rc" -eq 0 ]; then
+            echo "${version} is already on npmjs; nothing to publish"
+          elif printf '%s' "$view_out" | grep -qiE 'E404|404 Not Found|not in this registry|no matching version'; then
+            # Refuse to move `latest` backwards: npm itself also refuses a
+            # version lower than the current latest without an explicit
+            # --tag, but with an opaque error — state the invariant
+            # explicitly instead. A backport below the current latest must
+            # be published manually with an explicit dist-tag. Fail closed:
+            # only a definitive "package not published yet" (404) skips the
+            # comparison; any other lookup error stops the job rather than
+            # silently bypassing the guard.
+            set +e
+            latest=$(npm view "@${GITHUB_REPOSITORY}" dist-tags.latest 2>&1)
+            latest_rc=$?
+            set -e
+            if [ "$latest_rc" -eq 0 ]; then
+              if [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)" != "$version" ]; then
+                echo "release ${version} is lower than the current latest (${latest}); refusing to move latest backwards" >&2
+                echo "publish a backport manually with an explicit --tag if that is intended" >&2
+                exit 1
+              fi
+            elif ! printf '%s' "$latest" | grep -qiE 'E404|404 Not Found|not in this registry|no such package'; then
+              echo "could not determine the current latest dist-tag on npmjs:" >&2
+              printf '%s\n' "$latest" >&2
+              exit 1
+            fi
+            npm publish --provenance --access public --ignore-scripts
+          else
+            echo "unexpected error querying npmjs for ${version}:" >&2
+            printf '%s\n' "$view_out" >&2
+            exit 1
+          fi
+
+      # Mirror the same version to GitHub Packages with the job's own
+      # GITHUB_TOKEN (packages: write) — no provenance, since npm allows
+      # only one provenance source per version. RELEASE_TAG tells the
+      # script which release is being mirrored (authoritative over its
+      # version-equality heuristic, which is ambiguous when the released
+      # version equals the committed placeholder). The script skips cleanly
+      # when the version is already mirrored (re-run idempotency) and fails
+      # loudly when no token is present.
+      - name: Mirror to GitHub Packages
         run: npm run publish:gh-packages -- --publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}

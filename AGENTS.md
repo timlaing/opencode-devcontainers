@@ -22,14 +22,29 @@ Before committing changes, verify documentation is updated to reflect code chang
 
 ## Post-PR: Release and Upgrade Workflow
 
-After a PR is merged to main, semantic-release automatically:
+Releases are event-driven, never push-driven: merging to main never
+publishes anything. To cut a release:
 
-1. Creates a new version based on commit messages
-2. Publishes the canonical version to npmjs (`registry.npmjs.org`), with
-   provenance
-3. Mirrors that version to the GitHub Packages npm registry
-   (`npm.pkg.github.com`) via `scripts/publish-github-packages.mjs`
-4. Creates a GitHub release
+1. Ensure `main` is green
+2. `gh release create vX.Y.Z --target main --generate-notes` (the Releases
+   UI works the same — publishing the release is what triggers the pipeline)
+3. The `Publish release` job in `.github/workflows/ci.yml` triggers on the
+   release event and:
+   1. stamps the tag's version into the checkout (`package.json` commits a
+      placeholder; the release tag is the source of truth)
+   2. publishes the canonical version to npmjs (`registry.npmjs.org`), with
+      provenance
+   3. mirrors that version to the GitHub Packages npm registry
+      (`npm.pkg.github.com`) via `scripts/publish-github-packages.mjs`
+4. Re-running the publish job is safe: both publishes skip when the version
+   is already present. Draft/prerelease releases are ignored by the job;
+   promoting a prerelease to a stable release does publish (GitHub emits
+   the `released` event for that transition). A release whose version is
+   lower than the current `latest` is refused — backports are published
+   manually with an explicit dist-tag.
+   If several releases are cut in quick succession, GitHub keeps only one
+   queued publish run — a superseded run can be re-run from the Actions
+   tab (both publishes are idempotent, so re-runs never duplicate).
 
 The npmjs publish uses **trusted publishing (OIDC)** — no npm token secret
 exists in the repo. `id-token: write` lets the npm CLI exchange a
