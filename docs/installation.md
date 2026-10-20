@@ -108,8 +108,8 @@ V1-only release:
 !!! note "Package rename"
     `opencode-devcontainers@0.5.1` and earlier were published on npmjs under
     the unscoped name by the original author (that registry needs no scope
-    mapping). This fork publishes under the `@timlaing` scope on GitHub
-    Packages.
+    mapping). This fork publishes the `@timlaing`-scoped package on npmjs
+    (canonical) and mirrors it to GitHub Packages.
 
 ## Dependencies
 

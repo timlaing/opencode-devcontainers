@@ -52,18 +52,22 @@ function readPkg() {
 /**
  * @param {string} name package name
  * @param {string} version version to probe
- * @param {string} userconfig path to an .npmrc that authenticates reads
+ * @param {string} userconfig path to an .npmrc that references ${NODE_AUTH_TOKEN}
+ * @param {string} token GitHub token to expose as NODE_AUTH_TOKEN for the probe
  * @returns {boolean} true when `version` is already on GitHub Packages
  */
-function alreadyPublished(name, version, userconfig) {
+function alreadyPublished(name, version, userconfig, token) {
   // GitHub Packages requires a token even to read public packages, so this
   // probe is authenticated — an unauthenticated probe would always error and
-  // silently read as "not published", making the guard inert.
+  // silently read as "not published", making the guard inert. The token is
+  // the one resolved by main() (GITHUB_TOKEN ?? GH_TOKEN ?? NODE_AUTH_TOKEN)
+  // so every documented fallback also authenticates the probe, not just
+  // NODE_AUTH_TOKEN being set in the environment.
   try {
     execFileSync(
       'npm',
       ['view', `${name}@${version}`, 'version', '--registry', GH_PACKAGES_REGISTRY, '--userconfig', userconfig],
-      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_AUTH_TOKEN: process.env.NODE_AUTH_TOKEN } }
+      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_AUTH_TOKEN: token } }
     )
     return true
   } catch (error) {
@@ -113,10 +117,20 @@ function main() {
   const dir = mkdtempSync(join(tmpdir(), 'ocdc-ghpkg-'))
   const userconfig = join(dir, '.npmrc')
   try {
-    writeFileSync(userconfig, `${GH_HOST}_authToken = \${NODE_AUTH_TOKEN}\n`)
+    // `${GH_HOST}:_authToken` -> `//npm.pkg.github.com/:_authToken`: the
+    // nerf-darted key keeps BOTH the leading slashes and the colon before
+    // the setting name; dropping either makes npm fail to match the token
+    // to the registry and the publish 401s.
+    writeFileSync(userconfig, `${GH_HOST}:_authToken = \${NODE_AUTH_TOKEN}\n`)
 
-    if (alreadyPublished(name, version, userconfig)) {
+    // Without a token the duplicate check cannot run (GitHub Packages
+    // refuses anonymous reads); that only happens in a dry run, which
+    // publishes nothing, so skipping the guard is safe. `--publish` runs
+    // already threw above when no token was resolved.
+    if (token && alreadyPublished(name, version, userconfig, token)) {
       throw new Error(`${name}@${version} already exists on ${GH_PACKAGES_REGISTRY}; refusing to overwrite`)
+    } else if (!token) {
+      console.log('[publish-github-packages] dry run without a token: skipping duplicate-version check')
     }
 
     const args = [
