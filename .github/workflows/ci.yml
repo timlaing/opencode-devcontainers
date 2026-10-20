@@ -205,11 +205,23 @@ jobs:
             # version lower than the current latest without an explicit
             # --tag, but with an opaque error — state the invariant
             # explicitly instead. A backport below the current latest must
-            # be published manually with an explicit dist-tag.
-            latest=$(npm view "@${GITHUB_REPOSITORY}" dist-tags.latest 2> /dev/null || true)
-            if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)" != "$version" ]; then
-              echo "release ${version} is lower than the current latest (${latest}); refusing to move latest backwards" >&2
-              echo "publish a backport manually with an explicit --tag if that is intended" >&2
+            # be published manually with an explicit dist-tag. Fail closed:
+            # only a definitive "package not published yet" (404) skips the
+            # comparison; any other lookup error stops the job rather than
+            # silently bypassing the guard.
+            set +e
+            latest=$(npm view "@${GITHUB_REPOSITORY}" dist-tags.latest 2>&1)
+            latest_rc=$?
+            set -e
+            if [ "$latest_rc" -eq 0 ]; then
+              if [ "$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)" != "$version" ]; then
+                echo "release ${version} is lower than the current latest (${latest}); refusing to move latest backwards" >&2
+                echo "publish a backport manually with an explicit --tag if that is intended" >&2
+                exit 1
+              fi
+            elif ! printf '%s' "$latest" | grep -qiE 'E404|404 Not Found|not in this registry|no such package'; then
+              echo "could not determine the current latest dist-tag on npmjs:" >&2
+              printf '%s\n' "$latest" >&2
               exit 1
             fi
             npm publish --provenance --access public --ignore-scripts
