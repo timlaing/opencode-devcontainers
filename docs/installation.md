@@ -1,7 +1,7 @@
 # Installation
 
 The package is published on
-[GitHub Packages](https://github.com/timlaing/opencode-devcontainers/pkgs)
+[GitHub Packages](https://github.com/timlaing/opencode-devcontainers/packages)
 as `@timlaing/opencode-devcontainers` (not on npmjs.com). OpenCode
 installs npm plugins automatically when they appear in your
 configuration, but npm/bun must be able to resolve the `@timlaing`
@@ -21,8 +21,8 @@ run OpenCode) or globally in `~/.npmrc`:
 ```
 
 Then export a token with `read:packages` (a classic PAT with the
-`read:packages` scope, or a fine-grained PAT with read access to
-Packages):
+`read:packages` scope — GitHub's npm registry does not accept
+fine-grained tokens):
 
 ```sh
 export NODE_AUTH_TOKEN=github_pat_...

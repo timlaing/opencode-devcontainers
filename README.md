@@ -70,7 +70,7 @@ Add to your `opencode.json(c)`:
 ```
 
 OpenCode automatically installs npm plugins on startup. The package is
-published on [GitHub Packages](https://github.com/timlaing/opencode-devcontainers/pkgs),
+published on [GitHub Packages](https://github.com/timlaing/opencode-devcontainers/packages),
 so your npm/bun config must map the `@timlaing` scope to
 `https://npm.pkg.github.com` (with a `read:packages` token) before
 OpenCode can install it. Full instructions (including the git-based
