@@ -32,7 +32,10 @@ Verify the plugin loads:
 opencode plugin list
 ```
 
-`opencode-devcontainers` should appear with its version.
+`opencode-devcontainers` should appear with its version. This lists
+user-scoped plugins; on a fresh machine it does not list project-scoped
+plugins. If you installed the plugin per project, verify it from inside an
+OpenCode session instead — the `/devcontainer` command should be available.
 
 ## OpenCode V1 (≥ 1.18.29)
 

@@ -6,7 +6,7 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
@@ -257,6 +257,17 @@ describe('resolveWorkspace', () => {
   test('rejects a branch that resolves to the clones directory itself', () => {
     assert.strictEqual(resolveWorkspace('..'), null)
   })
+
+  test('rejects targets whose repo or branch contains dot segments', () => {
+    // 'repo/../other' stays inside the clones dir after normalization, but
+    // the unnormalized repo/branch pair handed to removeClone() would delete
+    // a different repo's clones entirely
+    mkdirSync(join(process.env.OCDC_CLONES_DIR, 'other'), { recursive: true })
+
+    assert.strictEqual(resolveWorkspace('repo/../other'), null)
+    assert.strictEqual(resolveWorktreeWorkspace('repo/../other'), null)
+    assert.strictEqual(resolveWorkspace('myrepo/./branch'), null)
+  })
 })
 
 describe('resolveWorktreeWorkspace', () => {
@@ -338,6 +349,18 @@ describe('saveSessionIfCurrent', () => {
 
     assert.strictEqual(saveSessionIfCurrent(id, baseline, { workspace: '/ws/stale' }), false)
     assert.strictEqual(loadSession(id), null)
+  })
+
+  test('never persists the cache-only change marker to disk', () => {
+    const id = `ssc-nopersist-${Date.now()}`
+    saveSession(id, { workspace: '/ws/a', starting: true })
+    // Callers pass cached objects back in (e.g. { ...session, starting: false })
+    const cached = loadSession(id)
+    saveSession(id, { ...cached, starting: false })
+
+    const raw = JSON.parse(readFileSync(join(getSessionsDir(), `${id}.json`), 'utf-8'))
+    assert.ok(!('_seq' in raw), '_seq must not be written to disk')
+    assert.strictEqual(raw.starting, false)
   })
 })
 

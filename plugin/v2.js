@@ -32,10 +32,14 @@ export async function setup(ctx) {
   void runWithTimeout(
     () => cleanupStaleSessions(async () => {
       // V2's ctx.session.list() returns a bare array; older/newer shapes
-      // returned { data }. Handle both — an unexpected shape must never
-      // make cleanup see zero active sessions and delete them all.
+      // returned { data }. An unexpected shape (e.g. an error payload)
+      // must abort cleanup, never be mistaken for "no active sessions" —
+      // that would delete every session file.
       const listed = await ctx.session.list()
-      const sessions = Array.isArray(listed) ? listed : (listed?.data ?? [])
+      const sessions = Array.isArray(listed) ? listed : listed?.data
+      if (!Array.isArray(sessions)) {
+        throw new Error("unexpected session.list() shape; skipping stale-session cleanup")
+      }
       return sessions.map((s) => s.id)
     }),
     INIT_TIMEOUT_MS

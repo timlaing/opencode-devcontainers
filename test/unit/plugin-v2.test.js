@@ -45,7 +45,7 @@ afterEach(teardownEnv)
 // ============ Fake plugin context ============
 
 /** Fake V2 plugin ctx capturing transform/hook registrations */
-function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false } = {}) {
+function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false, listOverride = null } = {}) {
   const tools = []
   const hooks = []
   const commands = []
@@ -57,8 +57,10 @@ function makeFakeCtx({ sessions = [], prompts = [], rawSessionList = false } = {
     options: {},
     session: {
       // V2's ctx.session.list() returns a bare array; older/newer shapes
-      // returned { data }. rawSessionList exercises the V2 shape.
-      list: rawSessionList ? async () => sessions : async () => ({ data: sessions }),
+      // returned { data }. rawSessionList exercises the V2 shape; a
+      // listOverride fakes malformed shapes (e.g. error payloads).
+      list: listOverride
+        ?? (rawSessionList ? async () => sessions : async () => ({ data: sessions })),
       prompt: async (input) => { prompts.push(input); return {} },
     },
     command: {
@@ -157,6 +159,22 @@ describeIfPosix('setup registrations', () => {
     assert.ok(kept, 'active session file kept')
     const removed = await waitFor(() => !existsSync(join(testDir, 'sessions', `${stale}.json`)))
     assert.ok(removed, 'stale session file removed')
+  })
+
+  test('skips cleanup on an unexpected session.list() shape', async () => {
+    const sessionID = sid('init-weird-keep')
+    const stale = sid('init-weird-stale')
+    saveSession(sessionID, { repoName: 'repo', branch: 'feat', workspace: '/ws/keep' })
+    writeSessionFile(stale, { workspace: '/ws/stale' })
+
+    // A malformed shape (e.g. an error payload) must abort cleanup, never
+    // be mistaken for "no active sessions" and delete everything
+    const fake = makeFakeCtx({ listOverride: async () => ({}) })
+    await setup(fake.ctx)
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assert.ok(existsSync(join(testDir, 'sessions', `${sessionID}.json`)), 'active session kept')
+    assert.ok(existsSync(join(testDir, 'sessions', `${stale}.json`)), 'stale file kept — cleanup skipped')
   })
 
   test('handles ctx.session.list returning a bare array (V2 shape)', async () => {

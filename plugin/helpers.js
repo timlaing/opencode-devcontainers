@@ -125,8 +125,12 @@ export function loadSession(sessionID) {
 export function saveSession(sessionID, state) {
   const sessionsDir = getSessionsDir()
   mkdirSync(sessionsDir, { recursive: true })
+  // Strip the cache-only change marker: callers pass cached objects back in
+  // (e.g. { ...session, starting: false }), which would otherwise persist it
+  const clean = { ...state }
+  delete clean._seq
   const session = {
-    ...state,
+    ...clean,
     activatedAt: new Date().toISOString()
   }
   writeFileSync(getSessionFile(sessionID), JSON.stringify(session, null, 2))
@@ -181,7 +185,22 @@ export function saveSessionIfCurrent(sessionID, baseline, state) {
 
 // ============ Workspace Resolution ============
 
+/**
+ * Reject targets containing '.' or '..' path segments. Such a target can
+ * stay inside the clones/worktrees directory after normalization (so a
+ * containment check passes) while the unnormalized repo/branch pair handed
+ * to removeClone() deletes a *different* repo's directory entirely.
+ *
+ * @param {string} target - Raw repo/branch target
+ * @returns {boolean}
+ */
+function hasTraversalSegments(target) {
+  return target.split('/').some((seg) => seg === '.' || seg === '..')
+}
+
 export function resolveWorkspace(branchArg) {
+  if (hasTraversalSegments(branchArg)) return null
+
   const clonesDir = getClonesDir()
   let repoName = null
   let branch = branchArg
@@ -245,6 +264,8 @@ export function resolveWorkspace(branchArg) {
  * Similar to resolveWorkspace but for worktrees directory
  */
 export function resolveWorktreeWorkspace(branchArg) {
+  if (hasTraversalSegments(branchArg)) return null
+
   const worktreesDir = getWorktreesDir()
   let repoName = null
   let branch = branchArg

@@ -34,9 +34,9 @@ through OpenCode's permission configuration:
 
 ```json
 {
-  "permission": {
-    "devcontainer": "ask"
-  }
+  "permissions": [
+    { "action": "devcontainer", "resource": "*", "effect": "ask" }
+  ]
 }
 ```
 
