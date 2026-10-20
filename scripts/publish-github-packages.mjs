@@ -33,7 +33,10 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-const GH_HOST = '//npm.pkg.github.com'
+// The `_authToken` key must be the nerf-darted registry URL, which includes a
+// trailing slash (`//npm.pkg.github.com/`). Without it npm will not match the
+// token to the registry and the publish fails with a 401.
+const GH_HOST = '//npm.pkg.github.com/'
 const GH_PACKAGES_REGISTRY = 'https://npm.pkg.github.com'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -49,16 +52,32 @@ function readPkg() {
 /**
  * @param {string} name package name
  * @param {string} version version to probe
+ * @param {string} userconfig path to an .npmrc that authenticates reads
  * @returns {boolean} true when `version` is already on GitHub Packages
  */
-function alreadyPublished(name, version) {
+function alreadyPublished(name, version, userconfig) {
+  // GitHub Packages requires a token even to read public packages, so this
+  // probe is authenticated — an unauthenticated probe would always error and
+  // silently read as "not published", making the guard inert.
   try {
-    execFileSync('npm', ['view', `${name}@${version}`, 'version', '--registry', GH_PACKAGES_REGISTRY], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    execFileSync(
+      'npm',
+      ['view', `${name}@${version}`, 'version', '--registry', GH_PACKAGES_REGISTRY, '--userconfig', userconfig],
+      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_AUTH_TOKEN: process.env.NODE_AUTH_TOKEN } }
+    )
     return true
-  } catch {
-    return false
+  } catch (error) {
+    const detail = String(error.stderr ?? error.message ?? error)
+    // Auth failures mean the probe could not answer — surface them rather
+    // than pretending the version is absent.
+    if (/E401|ENEEDAUTH|401|unauthorized/i.test(detail)) {
+      throw new Error(`authenticated probe failed for ${name}@${version}: ${detail}`)
+    }
+    // E404 means the version is genuinely absent.
+    if (/E404|404|not found/i.test(detail)) {
+      return false
+    }
+    throw error
   }
 }
 
@@ -67,8 +86,18 @@ function main() {
   const dryRun = !process.argv.includes('--publish')
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? process.env.NODE_AUTH_TOKEN
 
-  if (alreadyPublished(name, version)) {
-    throw new Error(`${name}@${version} already exists on ${GH_PACKAGES_REGISTRY}; refusing to overwrite`)
+  // semantic-release's `prepare` only stamps the released version into the
+  // working package.json when a release actually happens. If the working
+  // version still matches the committed one, this push had no releasable
+  // commits (docs-only, chore, etc.) — nothing to mirror. This is the check
+  // the workflow's removed `if:` gate could not make, because semantic-release
+  // exits 1 for both "no release needed" and "release failed".
+  const committed = JSON.parse(
+    execFileSync('git', ['show', 'HEAD:package.json'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  )
+  if (committed.version === version) {
+    console.log(`[publish-github-packages] no release on this push (package.json still at ${version}); nothing to mirror`)
+    return
   }
 
   // A real publish needs a token; an empty/absent one would otherwise fail
@@ -84,7 +113,11 @@ function main() {
   const dir = mkdtempSync(join(tmpdir(), 'ocdc-ghpkg-'))
   const userconfig = join(dir, '.npmrc')
   try {
-    writeFileSync(userconfig, `${GH_HOST}:_authToken = \${NODE_AUTH_TOKEN}\n`)
+    writeFileSync(userconfig, `${GH_HOST}_authToken = \${NODE_AUTH_TOKEN}\n`)
+
+    if (alreadyPublished(name, version, userconfig)) {
+      throw new Error(`${name}@${version} already exists on ${GH_PACKAGES_REGISTRY}; refusing to overwrite`)
+    }
 
     const args = [
       'publish',

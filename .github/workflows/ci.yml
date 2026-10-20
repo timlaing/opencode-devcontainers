@@ -86,9 +86,6 @@ jobs:
       id-token: write   # OIDC for npmjs provenance attestation
       packages: write   # Publish to the GitHub Packages npm registry
       issues: write     # For semantic-release failure reporting
-    outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
       # persist-credentials is off so no token sits in .git/config while
       # `npm ci` runs dependency lifecycle scripts; the release step points
@@ -139,13 +136,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Mirror the released version to GitHub Packages. semantic-release's
-      # prepare step already stamped the checked-out package.json with the
-      # release version, so this publishes an identical artifact. Authenticated
-      # with GITHUB_TOKEN (packages: write); no provenance, since npm allows
-      # only one provenance source per version.
+      # Mirror the released version to GitHub Packages. No if: gate here on
+      # purpose — semantic-release's exit code cannot distinguish "no release
+      # needed" from "release failed" (both are 1), and no step output is
+      # set by the plain CLI. Instead the script itself compares the stamped
+      # package.json version against the committed one (semantic-release's
+      # prepare only stamps on an actual release) and skips cleanly when no
+      # release happened. Authenticated with GITHUB_TOKEN (packages: write);
+      # no provenance, since npm allows only one provenance source per version.
       - name: Mirror release to GitHub Packages
-        if: steps.semantic.outputs.new_release_published == 'true'
         run: npm run publish:gh-packages -- --publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
