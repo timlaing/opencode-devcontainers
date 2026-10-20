@@ -110,9 +110,10 @@ jobs:
           cache: npm
 
       # npm trusted publishing (OIDC) requires npm >= 11.5.1; the runner's
-      # bundled npm with Node 22 is older, so pin a known-good major.
+      # bundled npm with Node 22 is older. Exact pin keeps the release
+      # deterministic; --ignore-scripts blocks lifecycle scripts.
       - name: Pin npm for trusted publishing support
-        run: npm install -g npm@^11.5.1
+        run: npm install -g npm@11.21.1 --ignore-scripts
 
       - name: Install Node.js dependencies
         run: npm ci
