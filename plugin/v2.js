@@ -52,7 +52,9 @@ export async function setup(ctx) {
       name: "devcontainer",
       description: "Target a devcontainer - /devcontainer <branch>, off. Or remove: /devcontainer rm <branch>, or rm all",
       execute: async ({ sessionID, prompt, delivery }) => {
-        const text = commandBody.replace("$ARGUMENTS", prompt.text ?? "")
+        // Replacer function: prompt text is arbitrary input, and a string
+        // replacement would expand `$&`/`$1`-style patterns in it
+        const text = commandBody.replace("$ARGUMENTS", () => prompt.text ?? "")
         await ctx.session.prompt({ sessionID, text, delivery })
       },
     })

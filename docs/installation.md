@@ -56,9 +56,9 @@ V1-only release:
 ```
 
 !!! note "Package rename"
-`opencode-devcontainers@0.5.1` and earlier were published under the
-unscoped name by the original author. This fork publishes under the
-`@timlaing` scope.
+    `opencode-devcontainers@0.5.1` and earlier were published under the
+    unscoped name by the original author. This fork publishes under the
+    `@timlaing` scope.
 
 ## Dependencies
 

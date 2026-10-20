@@ -57,10 +57,10 @@ The slash command is sugar over two tools the agent can also call directly:
 ## Worktrees (OpenCode V1 only)
 
 !!! note "V2 users"
-OpenCode V2 supports worktrees natively — use the built-in
-`worktree_create` / `worktree_list` / `worktree_remove` utilities and the
-`worktree` configuration instead of this plugin. The `/worktree` and
-`/workspaces` commands only exist in the V1 plugin API.
+    OpenCode V2 supports worktrees natively — use the built-in
+    `worktree_create` / `worktree_list` / `worktree_remove` utilities and the
+    `worktree` configuration instead of this plugin. The `/worktree` and
+    `/workspaces` commands only exist in the V1 plugin API.
 
 ```
 /worktree feature-x        # Create/target a worktree for this branch

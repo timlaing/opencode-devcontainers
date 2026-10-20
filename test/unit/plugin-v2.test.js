@@ -201,6 +201,23 @@ describeIfPosix('/devcontainer command', () => {
     assert.strictEqual(prompts[0].delivery, 'steer')
   })
 
+  test('inserts prompt text literally, not as a replacement pattern', async () => {
+    const { commands, prompts } = await setupV2()
+    // `$&` in a string replacement expands to the matched substring
+    await commands[0].execute({
+      sessionID: 'sess-cmd-literal',
+      prompt: { text: 'feat/$&-x' },
+      delivery: 'steer',
+    })
+
+    assert.strictEqual(prompts.length, 1)
+    assert.ok(
+      prompts[0].text.includes('target` set to: feat/$&-x'),
+      'special replacement patterns must not be expanded'
+    )
+    assert.ok(!prompts[0].text.includes('$ARGUMENTS'), 'placeholder replaced')
+  })
+
   test('empty arguments keep the status guidance', async () => {
     const { commands, prompts } = await setupV2()
     await commands[0].execute({

@@ -6,8 +6,8 @@ builds and starts a devcontainer for it, and transparently routes the agent's
 shell commands into that container.
 
 !!! info "Community project"
-This is a community project and is not built by or affiliated with the
-OpenCode team.
+    This is a community project and is not built by or affiliated with the
+    OpenCode team.
 
 ## What it does
 
