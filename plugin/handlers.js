@@ -43,16 +43,19 @@ export async function cleanupStaleSessions(listSessionIDs) {
 
   try {
     const activeIDs = new Set(await listSessionIDs())
+    const candidates = readdirSync(sessionsDir)
+      .filter((file) => file.endsWith(".json"))
+      .map((file) => ({ file, sessionID: file.replace(".json", "") }))
+      .filter(({ sessionID }) => !activeIDs.has(sessionID))
 
-    for (const file of readdirSync(sessionsDir)) {
-      if (!file.endsWith(".json")) continue
-      const sessionID = file.replace(".json", "")
-      if (activeIDs.has(sessionID)) continue
-      // Revalidate against the live list right before unlinking: a session
-      // saved after the snapshot above must not be treated as stale
-      if ((await listSessionIDs()).includes(sessionID)) continue
+    // Revalidate each candidate against the live list right before
+    // unlinking: a session saved after the snapshot above must not be
+    // treated as stale. Sequential via a promise chain.
+    await candidates.reduce(async (prev, { file, sessionID }) => {
+      await prev
+      if ((await listSessionIDs()).includes(sessionID)) return
       unlinkSync(join(sessionsDir, file))
-    }
+    }, Promise.resolve())
   } catch {}
 }
 
@@ -467,7 +470,7 @@ export async function executeDevcontainerTool(args, ctx) {
   }
 
   // Remove request — needs docker (validated by core), not the devcontainer CLI
-  if (target && target.startsWith("rm ")) {
+  if (target?.startsWith("rm ")) {
     const rmArg = target.slice(3).trim()
 
     if (!rmArg) {

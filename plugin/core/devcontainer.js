@@ -294,57 +294,71 @@ const inflightStarts = new Set()
  * @param {string} [options.cwd] - Working directory (for branch resolution)
  * @returns {Promise<{workspace: string, repo: string, branch: string}>}
  */
+/**
+ * Resolve the workspace path, repo name, and branch for a background start.
+ *
+ * @param {string} workspaceOrBranch - Workspace path or branch name
+ * @param {object} options
+ * @param {string} [options.cwd] - Working directory (for branch resolution)
+ * @returns {Promise<{workspace: string, repoName: string, branch: string}>}
+ */
+async function resolveStartTarget(workspaceOrBranch, options) {
+  // Check if it's a branch name (not an absolute path)
+  if (workspaceOrBranch.startsWith('/')) {
+    // It's a workspace path
+    return {
+      workspace: workspaceOrBranch,
+      repoName: basename(workspaceOrBranch),
+      branch: await getCurrentBranch(workspaceOrBranch) || 'unknown',
+    }
+  }
+
+  // It's a branch name - need to resolve workspace
+  const cwd = options.cwd || process.cwd()
+  const repoRoot = await getRepoRoot(cwd)
+
+  if (!repoRoot) {
+    throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
+  }
+
+  // For background start, we do quick validation only
+  // The actual clone will happen in the background job — use its
+  // expected path whether or not the clone exists yet
+  const repoName = basename(repoRoot)
+  return {
+    workspace: getClonePath(repoName, workspaceOrBranch),
+    repoName,
+    branch: workspaceOrBranch,
+  }
+}
+
+/**
+ * Quick devcontainer.json check for a background start. Skipped when the
+ * workspace does not exist yet (branch names whose clone is still pending).
+ *
+ * @param {string} workspace - Workspace path
+ */
+function assertDevcontainerJson(workspace) {
+  if (!existsSync(workspace)) return
+
+  const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
+    ? `${workspace}/.devcontainer/devcontainer.json`
+    : existsSync(`${workspace}/.devcontainer.json`)
+      ? `${workspace}/.devcontainer.json`
+      : null
+
+  if (!devcontainerPath) {
+    throw new Error(`No devcontainer.json found in ${workspace}`)
+  }
+}
+
 export async function upBackground(workspaceOrBranch, options = {}) {
   await ensureDirs()
 
-  let workspace = workspaceOrBranch
-  let repoName
-  let branch
-
-  // Check if it's a branch name (not an absolute path)
-  if (!workspaceOrBranch.startsWith('/')) {
-    // It's a branch name - need to resolve workspace
-    const cwd = options.cwd || process.cwd()
-    const repoRoot = await getRepoRoot(cwd)
-    
-    if (!repoRoot) {
-      throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
-    }
-
-    // For background start, we do quick validation only
-    // The actual clone will happen in the background job
-    repoName = basename(repoRoot)
-    branch = workspaceOrBranch
-    
-    // Check if clone already exists
-    const clonePath = getClonePath(repoName, branch)
-    if (existsSync(clonePath)) {
-      workspace = clonePath
-    } else {
-      // Clone doesn't exist yet - will be created in background
-      // For now, use the expected path
-      workspace = clonePath
-    }
-  } else {
-    // It's a workspace path
-    workspace = workspaceOrBranch
-    repoName = basename(workspace)
-    branch = await getCurrentBranch(workspace) || 'unknown'
-  }
+  const { workspace, repoName, branch } = await resolveStartTarget(workspaceOrBranch, options)
 
   // Validate devcontainer.json exists (quick check)
-  // For branch names where workspace doesn't exist yet, skip this check
-  if (existsSync(workspace)) {
-    const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
-      ? `${workspace}/.devcontainer/devcontainer.json`
-      : existsSync(`${workspace}/.devcontainer.json`)
-        ? `${workspace}/.devcontainer.json`
-        : null
-
-    if (!devcontainerPath) {
-      throw new Error(`No devcontainer.json found in ${workspace}`)
-    }
-  }
+  assertDevcontainerJson(workspace)
 
   // Reuse an in-flight start for this workspace instead of racing a second
   // clone/start over the same job record. has+add run synchronously, so two
