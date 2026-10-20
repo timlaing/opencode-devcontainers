@@ -10,9 +10,11 @@ on:
 permissions:
   contents: read
 
+# Never cancel in-flight runs on main: a cancelled release job could leave
+# a published package without its tag/GitHub release. PR runs still cancel.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -85,11 +87,13 @@ jobs:
       new_release_published: ${{ steps.semantic.outputs.new_release_published }}
       new_release_version: ${{ steps.semantic.outputs.new_release_version }}
     steps:
-      # persist-credentials stays enabled here: semantic-release pushes the
-      # release tag with the workflow token embedded in the remote URL.
+      # persist-credentials is off so no token sits in .git/config while
+      # `npm ci` runs dependency lifecycle scripts; the release step points
+      # origin at GITHUB_TOKEN only after installs are done.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # registry-url points npm at GitHub Packages and writes an .npmrc auth
       # line keyed on NODE_AUTH_TOKEN. Dependency installs are unaffected:
@@ -110,7 +114,11 @@ jobs:
       # installed by `npm ci` from the lockfile — no on-demand install.
       - name: Run semantic-release
         id: semantic
-        run: npm run semantic-release
+        # Re-inject push credentials now that installs are finished:
+        # semantic-release pushes the release tag through origin's URL.
+        run: |
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          npm run semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
