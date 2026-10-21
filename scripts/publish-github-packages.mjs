@@ -35,7 +35,7 @@
  * job stays safe); a missing token still fails loudly.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -259,7 +259,35 @@ function main() {
       `[publish-github-packages] ${name}@${target} -> ${GH_PACKAGES_REGISTRY}${dryRun ? ' (dry run; pass --publish to publish)' : ''}`
     )
 
-    execFileSync('npm', args, { cwd: publishCwd, stdio: 'inherit', env: { ...process.env, NODE_AUTH_TOKEN: token } })
+    // spawnSync (not execFileSync + inherit) so npm's diagnostics are both
+    // surfaced here and inspectable on failure: the duplicate-refusal
+    // tolerance below matches on stderr, and a real failure prints npm's
+    // full output before throwing.
+    const result = spawnSync('npm', args, {
+      cwd: publishCwd,
+      encoding: 'utf8',
+      env: { ...process.env, NODE_AUTH_TOKEN: token },
+    })
+    if (result.error) throw result.error
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+    if (result.status !== 0) {
+      // A serialized duplicate run whose first mirror publish is still
+      // inside the registry's consistency window gets a version conflict
+      // here. That conflict (and only that conflict — the exact markers
+      // npm emits for a version clash, nothing else) proves the version is
+      // already present, so treat it as mirrored; every other failure
+      // prints npm's output and throws as before. Dry runs publish nothing,
+      // so no conflict can occur and none is tolerated.
+      if (publish && /E409|already staged|cannot publish over/i.test(result.stderr ?? '')) {
+        console.log(
+          `[publish-github-packages] ${name}@${target} already present on ${GH_PACKAGES_REGISTRY} (registry refused the duplicate publish); nothing to mirror`
+        )
+        return
+      }
+      process.stdout.write(output)
+      throw new Error(`npm publish for ${name}@${target} failed with exit code ${result.status}`)
+    }
+    process.stdout.write(output)
 
     console.log(`[publish-github-packages] ${name}@${target} -> ${GH_PACKAGES_REGISTRY} ok`)
   } finally {
