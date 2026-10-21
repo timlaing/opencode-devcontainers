@@ -224,7 +224,34 @@ jobs:
               printf '%s\n' "$latest" >&2
               exit 1
             fi
-            npm publish --provenance --access public --ignore-scripts
+            # GitHub fires BOTH `published` and `released` for a stable
+            # release, so this job runs twice per release (serialized by the
+            # release-publish group; the first run does the work). The
+            # second run can catch the registry's staging window: `npm view`
+            # above still 404s for a version whose PUT was accepted moments
+            # earlier, and a duplicate publish then fails E409 "already
+            # staged/published". That conflict proves the invariant holds —
+            # continue to the mirror instead of failing. Any other publish
+            # error still fails the job loudly. The awk leg streams npm's
+            # output straight into the step log (per-line flush: a hung
+            # publish keeps its diagnostics visible even if the job
+            # timeout kills the step) and reports the conflict markers
+            # through its own exit status — the decision therefore
+            # depends on no file surviving on disk and on nothing being
+            # buffered until after exit. awk consumes every line (no
+            # early-quit SIGPIPE into npm) and matches case-insensitively
+            # without relying on gawk extensions.
+            set +e
+            npm publish --provenance --access public --ignore-scripts 2>&1 | awk '
+              { line = tolower($0); if (line ~ /e409|already staged|cannot publish over/) conflict = 1; print; fflush() }
+              END { exit conflict ? 3 : 0 }'
+            rcs=("${PIPESTATUS[@]}")
+            set -e
+            publish_rc=${rcs[0]}
+            conflict_rc=${rcs[1]:-0}
+            if [ "$publish_rc" -ne 0 ] && [ "$conflict_rc" -ne 3 ]; then
+              exit 1
+            fi
           else
             echo "unexpected error querying npmjs for ${version}:" >&2
             printf '%s\n' "$view_out" >&2

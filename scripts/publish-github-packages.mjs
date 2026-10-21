@@ -35,7 +35,7 @@
  * job stays safe); a missing token still fails loudly.
  */
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -133,7 +133,7 @@ function onNpmjs(name, version) {
   }
 }
 
-function main() {
+async function main() {
   const { name, version } = readPkg()
   const dryRun = !process.argv.includes('--publish')
   const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? process.env.NODE_AUTH_TOKEN
@@ -259,7 +259,67 @@ function main() {
       `[publish-github-packages] ${name}@${target} -> ${GH_PACKAGES_REGISTRY}${dryRun ? ' (dry run; pass --publish to publish)' : ''}`
     )
 
-    execFileSync('npm', args, { cwd: publishCwd, stdio: 'inherit', env: { ...process.env, NODE_AUTH_TOKEN: token } })
+    // Stream npm's output live to the console (a hung publish keeps its
+    // diagnostics visible even if a job timeout kills the step — buffered
+    // captures only flush after exit) while watching stderr for the
+    // duplicate-conflict markers. Each write honors the sink's
+    // backpressure (pause the child stream until 'drain'): a producer
+    // faster than the log sink cannot queue unbounded chunks in memory.
+    // The conflict watch is sticky over a rolling window: once any window
+    // has contained a marker it stays seen regardless of how much trailing
+    // output arrives afterwards, and npm's single-line conflict message is
+    // far smaller than the window, so it cannot slip through either edge.
+    const status = await new Promise((resolve, reject) => {
+      const child = spawn('npm', args, {
+        cwd: publishCwd,
+        env: { ...process.env, NODE_AUTH_TOKEN: token },
+        stdio: ['inherit', 'pipe', 'pipe'],
+      })
+      const conflictRe = /E409|already staged|cannot publish over/i
+      const rollingCap = 64 * 1024
+      let rolling = ''
+      let sawConflict = false
+      const attach = (source, sink, observe) => {
+        source.on('data', (chunk) => {
+          if (observe) observe(chunk)
+          if (!sink.write(chunk)) {
+            source.pause()
+            sink.once('drain', () => source.resume())
+          }
+        })
+      }
+      attach(child.stdout, process.stdout)
+      attach(child.stderr, process.stderr, (chunk) => {
+        // Check the marker against the combined text *before* truncating:
+        // a marker straddling the window edge (prefix at the end of the
+        // retained tail, suffix early in this chunk) must be matched while
+        // both halves are still in hand, even when this chunk alone
+        // exceeds the cap.
+        const combined = rolling + String(chunk)
+        if (!sawConflict && conflictRe.test(combined)) sawConflict = true
+        rolling = combined.slice(-rollingCap)
+      })
+      child.on('error', reject)
+      child.on('close', (code) => resolve({ code, sawConflict }))
+    })
+
+    if (status.code !== 0) {
+      // A serialized duplicate run whose first mirror publish is still
+      // inside the registry's consistency window gets a version conflict
+      // here. That conflict (and only that conflict — the exact markers
+      // npm emits for a version clash, nothing else) proves the version is
+      // already present, so treat it as mirrored; every other failure
+      // throws with npm's diagnostics already streamed into the log. Dry
+      // runs publish nothing, so no conflict can occur and none is
+      // tolerated.
+      if (!dryRun && status.sawConflict) {
+        console.log(
+          `[publish-github-packages] ${name}@${target} already present on ${GH_PACKAGES_REGISTRY} (registry refused the duplicate publish); nothing to mirror`
+        )
+        return
+      }
+      throw new Error(`npm publish for ${name}@${target} failed with exit code ${status.code}`)
+    }
 
     console.log(`[publish-github-packages] ${name}@${target} -> ${GH_PACKAGES_REGISTRY} ok`)
   } finally {
@@ -275,7 +335,7 @@ function main() {
 }
 
 try {
-  main()
+  await main()
 } catch (error) {
   console.error(`[publish-github-packages] failed: ${error.message}`)
   process.exit(1)
