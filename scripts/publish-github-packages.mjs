@@ -290,8 +290,14 @@ async function main() {
       }
       attach(child.stdout, process.stdout)
       attach(child.stderr, process.stderr, (chunk) => {
-        rolling = (rolling + String(chunk)).slice(-rollingCap)
-        if (!sawConflict && conflictRe.test(rolling)) sawConflict = true
+        // Check the marker against the combined text *before* truncating:
+        // a marker straddling the window edge (prefix at the end of the
+        // retained tail, suffix early in this chunk) must be matched while
+        // both halves are still in hand, even when this chunk alone
+        // exceeds the cap.
+        const combined = rolling + String(chunk)
+        if (!sawConflict && conflictRe.test(combined)) sawConflict = true
+        rolling = combined.slice(-rollingCap)
       })
       child.on('error', reject)
       child.on('close', (code) => resolve({ code, sawConflict }))
