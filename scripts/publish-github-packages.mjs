@@ -261,24 +261,40 @@ async function main() {
 
     // Stream npm's output live to the console (a hung publish keeps its
     // diagnostics visible even if a job timeout kills the step — buffered
-    // captures only flush after exit) while retaining a capped tail of
-    // stderr for the duplicate-conflict match below. Nothing is bulk-
-    // buffered, so no maxBuffer kill can truncate a large log either.
+    // captures only flush after exit) while watching stderr for the
+    // duplicate-conflict markers. Each write honors the sink's
+    // backpressure (pause the child stream until 'drain'): a producer
+    // faster than the log sink cannot queue unbounded chunks in memory.
+    // The conflict watch is sticky over a rolling window: once any window
+    // has contained a marker it stays seen regardless of how much trailing
+    // output arrives afterwards, and npm's single-line conflict message is
+    // far smaller than the window, so it cannot slip through either edge.
     const status = await new Promise((resolve, reject) => {
       const child = spawn('npm', args, {
         cwd: publishCwd,
         env: { ...process.env, NODE_AUTH_TOKEN: token },
         stdio: ['inherit', 'pipe', 'pipe'],
       })
-      const stderrCap = 64 * 1024
-      let stderrTail = ''
-      child.stdout.on('data', (chunk) => process.stdout.write(chunk))
-      child.stderr.on('data', (chunk) => {
-        process.stderr.write(chunk)
-        stderrTail = (stderrTail + String(chunk)).slice(-stderrCap)
+      const conflictRe = /E409|already staged|cannot publish over/i
+      const rollingCap = 64 * 1024
+      let rolling = ''
+      let sawConflict = false
+      const attach = (source, sink, observe) => {
+        source.on('data', (chunk) => {
+          if (observe) observe(chunk)
+          if (!sink.write(chunk)) {
+            source.pause()
+            sink.once('drain', () => source.resume())
+          }
+        })
+      }
+      attach(child.stdout, process.stdout)
+      attach(child.stderr, process.stderr, (chunk) => {
+        rolling = (rolling + String(chunk)).slice(-rollingCap)
+        if (!sawConflict && conflictRe.test(rolling)) sawConflict = true
       })
       child.on('error', reject)
-      child.on('close', (code) => resolve({ code, stderrTail }))
+      child.on('close', (code) => resolve({ code, sawConflict }))
     })
 
     if (status.code !== 0) {
@@ -290,7 +306,7 @@ async function main() {
       // throws with npm's diagnostics already streamed into the log. Dry
       // runs publish nothing, so no conflict can occur and none is
       // tolerated.
-      if (!dryRun && /E409|already staged|cannot publish over/i.test(status.stderrTail)) {
+      if (!dryRun && status.sawConflict) {
         console.log(
           `[publish-github-packages] ${name}@${target} already present on ${GH_PACKAGES_REGISTRY} (registry refused the duplicate publish); nothing to mirror`
         )
