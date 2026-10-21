@@ -43,12 +43,15 @@ publishes anything. To cut a release:
    lower than the current `latest` is refused — backports are published
    manually with an explicit dist-tag. A stable release fires both the
    `published` and `released` events, so the publish job runs twice per
-   release: the first run publishes, the second skips everything (a
-   duplicate publish hitting npm's staging window is tolerated as
-   success). If several releases are cut in quick succession, GitHub keeps
-   only one queued publish run — a superseded run can be re-run from the
-   Actions tab (both publishes are idempotent, so re-runs never
-   duplicate).
+   release: the first run publishes; the second skips every step whose
+   version it finds already present — and when it catches npm's staging
+   window (`npm view` still 404 for the just-published version), it
+   attempts the duplicate publish, treats the registry's version conflict
+   as success, and continues to the mirror, which skips or tolerates its
+   duplicate the same way. If several releases are cut in quick
+   succession, GitHub keeps only one queued publish run — a superseded run
+   can be re-run from the Actions tab (both publishes are idempotent, so
+   re-runs never duplicate).
 
 The npmjs publish uses **trusted publishing (OIDC)** — no npm token secret
 exists in the repo. `id-token: write` lets the npm CLI exchange a

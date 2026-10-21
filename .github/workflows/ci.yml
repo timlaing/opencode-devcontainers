@@ -235,12 +235,19 @@ jobs:
             # error still fails the job loudly. Output streams live through
             # tee (a hung publish keeps its diagnostics visible even if the
             # job timeout kills the step; a command substitution would only
-            # flush after exit).
+            # flush after exit). npm's status is read from PIPESTATUS
+            # directly — a tee failure (e.g. a full disk) must not condemn
+            # a publish npm accepted, so it only warns; the conflict match
+            # still runs against whatever the file captured.
             set +e
-            set -o pipefail
             npm publish --provenance --access public --ignore-scripts 2>&1 | tee /tmp/npm-publish.log
-            publish_rc=$?
+            rcs=("${PIPESTATUS[@]}")
             set -e
+            publish_rc=${rcs[0]}
+            tee_rc=${rcs[1]:-0}
+            if [ "$tee_rc" -ne 0 ]; then
+              echo "warning: could not write /tmp/npm-publish.log (tee exited ${tee_rc}); npm output above is still streamed" >&2
+            fi
             if [ "$publish_rc" -ne 0 ] && ! grep -qiE 'E409|already staged|cannot publish over' /tmp/npm-publish.log; then
               exit 1
             fi
