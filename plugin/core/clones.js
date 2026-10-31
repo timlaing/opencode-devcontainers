@@ -123,18 +123,19 @@ export async function copyGitignored(source, dest) {
   // Count files per top-level directory
   const dirFileCounts = countFilesPerTopDir(ignoredFiles)
 
-  let copied = 0
+  const filesToCopy = ignoredFiles.filter(relPath => !isSkippableIgnoredPath(relPath, dirFileCounts))
 
-  for (const relPath of ignoredFiles) {
-    if (isSkippableIgnoredPath(relPath, dirFileCounts)) continue
+  // Copy files in parallel; copyIgnoredFile is idempotent (mkdir -p handles
+  // concurrent creation, copy is per-file independent)
+  const results = await Promise.all(
+    filesToCopy.map(async (relPath) => {
+      const srcPath = join(source, relPath)
+      const destPath = join(dest, relPath)
+      return copyIgnoredFile(srcPath, destPath)
+    })
+  )
 
-    const srcPath = join(source, relPath)
-    const destPath = join(dest, relPath)
-
-    if (await copyIgnoredFile(srcPath, destPath)) copied++
-  }
-
-  return copied
+  return results.filter(Boolean).length
 }
 
 /**

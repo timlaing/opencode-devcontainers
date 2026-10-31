@@ -154,11 +154,17 @@ export async function listWorktreeWorkspaces(options = {}) {
     
     const branches = await readdir(repoPath)
     
-    for (const branch of branches) {
-      const workspace = join(repoPath, branch)
-      if (await isWorktreeWorkspace(workspace)) {
-        worktrees.push({ workspace, repo, branch })
-      }
+    // Check branches in parallel; isWorktreeWorkspace is independent per branch
+    const branchResults = await Promise.all(
+      branches.map(async (branch) => {
+        const workspace = join(repoPath, branch)
+        const isWt = await isWorktreeWorkspace(workspace)
+        return isWt ? { workspace, repo, branch } : null
+      })
+    )
+    
+    for (const result of branchResults) {
+      if (result) worktrees.push(result)
     }
   }
   
