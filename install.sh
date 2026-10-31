@@ -23,6 +23,9 @@ mkdir -p "$LIB_DIR"
 # Check if we're running from a local clone or need to download
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" && pwd 2>/dev/null)" || SCRIPT_DIR=""
 
+# curl flags: enforce HTTPS on initial URL and redirects, TLS 1.2+
+CURL_FLAGS="--proto '=https' --proto-redir '=https' --tlsv1.2"
+
 if [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/bin/ocdc" ]]; then
   # Local install from clone
   echo "Installing from local directory..."
@@ -56,7 +59,7 @@ else
   
   # Download main executable
   echo "  Downloading: bin/ocdc"
-  if curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/bin/ocdc" -o "$INSTALL_DIR/ocdc"; then
+  if curl -fsSL $CURL_FLAGS "https://raw.githubusercontent.com/$REPO/main/bin/ocdc" -o "$INSTALL_DIR/ocdc"; then
     chmod +x "$INSTALL_DIR/ocdc"
     echo "  Installed: bin/ocdc"
   else
@@ -67,7 +70,7 @@ else
   # Download lib scripts
   for script in $LIB_SCRIPTS; do
     echo "  Downloading: lib/$script"
-    if curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/lib/$script" -o "$LIB_DIR/$script"; then
+    if curl -fsSL $CURL_FLAGS "https://raw.githubusercontent.com/$REPO/main/lib/$script" -o "$LIB_DIR/$script"; then
       chmod +x "$LIB_DIR/$script"
       echo "  Installed: lib/$script"
     else
@@ -78,8 +81,8 @@ else
   
   # Download and install Node.js dependencies for MCP fetch
   echo "  Downloading: package.json"
-  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/package.json" -o "$LIB_DIR/package.json" || true
-  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/package-lock.json" -o "$LIB_DIR/package-lock.json" 2>/dev/null || true
+  curl -fsSL $CURL_FLAGS "https://raw.githubusercontent.com/$REPO/main/package.json" -o "$LIB_DIR/package.json" || true
+  curl -fsSL $CURL_FLAGS "https://raw.githubusercontent.com/$REPO/main/package-lock.json" -o "$LIB_DIR/package-lock.json" 2>/dev/null || true
   if [[ -f "$LIB_DIR/package.json" ]]; then
     echo "  Installing Node.js dependencies..."
     (cd "$LIB_DIR" && npm ci --omit=dev --ignore-scripts --silent 2>/dev/null) || \
