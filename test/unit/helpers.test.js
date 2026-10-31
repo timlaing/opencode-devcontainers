@@ -6,10 +6,10 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
-import { join } from 'path'
-import { execSync } from 'child_process'
-import { tmpdir } from 'os'
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { execSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 
 import {
   withTimeout,
@@ -199,7 +199,7 @@ describe('deleteSession', () => {
 
   test('handles non-existent session gracefully', () => {
     // Should not throw
-    deleteSession('nonexistent-session')
+    assert.doesNotThrow(() => deleteSession('nonexistent-session'))
   })
 })
 

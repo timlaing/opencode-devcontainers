@@ -6,10 +6,10 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
-import { execSync } from 'child_process'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 
 // Module under test
 import { 
@@ -149,7 +149,7 @@ describe('createWorktree', () => {
     
     // Verify it's a worktree (has .git file, not directory)
     const gitPath = join(worktreePath, '.git')
-    const stat = await import('fs/promises').then(fs => fs.stat(gitPath))
+    const stat = await import('node:fs/promises').then(fs => fs.stat(gitPath))
     assert.ok(stat.isFile(), '.git should be a file in worktree')
   })
 

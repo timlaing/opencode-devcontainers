@@ -6,9 +6,9 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, existsSync } from 'fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, existsSync } from 'node:fs'
 
 // Module under test - will fail until implemented
 import { PATHS, pathId, ensureDirs, resolvePath } from '../../plugin/core/paths.js'

@@ -17,11 +17,11 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
+import { join } from 'node:path'
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, utimesSync,
-} from 'fs'
-import { execFileSync } from 'child_process'
+} from 'node:fs'
+import { execFileSync } from 'node:child_process'
 
 // Module under test
 import { devcontainers } from '../../plugin/index.js'

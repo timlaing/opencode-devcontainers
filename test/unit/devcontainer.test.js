@@ -9,11 +9,11 @@
 
 import { test, describe, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert'
-import { join, basename } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import { execSync } from 'child_process'
-import { createHash } from 'crypto'
+import { join, basename } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 // Module under test
 import { 
@@ -265,22 +265,15 @@ describe('up (integration)', () => {
   })
 
   test('allocates port and generates override config', async () => {
-    // Note: This will fail if devcontainer CLI is not installed,
-    // but that's expected for unit tests. We can check the setup worked.
-    try {
-      await up(workspaceDir, { dryRun: true })
-    } catch (e) {
-      // Expected in unit test environment without devcontainer
-      if (!e.message.includes('devcontainer')) {
-        throw e
-      }
-    }
-    
-    // Port should have been allocated
+    // dryRun returns the command without invoking the devcontainer CLI
+    const result = await up(workspaceDir, { dryRun: true })
+
+    // The port allocation is persisted before the dry-run short-circuit
     const ports = JSON.parse(readFileSync(join(testDir, 'ports.json'), 'utf-8'))
-    // May or may not have allocated depending on where it failed
-    // Just verify the setup is correct
-    assert.ok(true)
+    assert.strictEqual(ports[workspaceDir].port, result.port)
+    assert.strictEqual(typeof result.port, 'number')
+    assert.strictEqual(result.workspace, workspaceDir)
+    assert.ok(result.command.startsWith('devcontainer '))
   })
 
   test('accepts signal option for cancellation', async () => {
@@ -634,7 +627,7 @@ describe('down', () => {
 
   test('handles non-existent workspace', async () => {
     // Should not throw
-    await down('/workspace/nonexistent')
+    await assert.doesNotReject(() => down('/workspace/nonexistent'))
   })
 })
 

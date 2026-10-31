@@ -18,8 +18,8 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs'
+import { join } from 'node:path'
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 
 // Module under test
 import plugin, { devcontainers } from '../../plugin/index.js'

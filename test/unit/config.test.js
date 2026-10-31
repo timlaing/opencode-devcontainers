@@ -6,11 +6,11 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join, basename } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import childProcess from 'child_process'
-import { EventEmitter } from 'events'
+import { join, basename } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import childProcess from 'node:child_process'
+import { EventEmitter } from 'node:events'
 
 // Module under test
 import { 

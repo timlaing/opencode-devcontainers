@@ -6,10 +6,10 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, existsSync, statSync } from 'fs'
-import { execSync } from 'child_process'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 
 // Module under test
 import { 
@@ -165,7 +165,7 @@ describe('findStaleWorkspaces', () => {
     // Backdate the "stale" directory
     const staleDir = join(testDir, 'clones', 'repo-a', 'stale')
     const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) // 8 days ago
-    const { utimes } = await import('fs/promises')
+    const { utimes } = await import('node:fs/promises')
     await utimes(staleDir, oldTime, oldTime)
     
     const stale = await findStaleWorkspaces({ maxAgeDays: 7 })
