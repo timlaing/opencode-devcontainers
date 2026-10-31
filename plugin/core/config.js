@@ -7,10 +7,10 @@
  * - Loading user configuration
  */
 
-import { join, basename } from 'path'
-import { readFile, writeFile, mkdir } from 'fs/promises'
-import { existsSync } from 'fs'
-import childProcess from 'child_process'
+import { join, basename } from 'node:path'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import childProcess from 'node:child_process'
 import { PATHS, pathId } from './paths.js'
 
 // Default configuration values
@@ -70,6 +70,46 @@ export async function readDevcontainerJson(workspace) {
  * @param {object|null} config - Devcontainer config
  * @returns {number} Internal port (defaults to 3000)
  */
+/**
+ * Parse a port value, tolerating numeric strings.
+ *
+ * @param {unknown} value - Port number or numeric string
+ * @returns {number|null} Parsed port, or null when not a valid port value
+ */
+function parsePort(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null
+  const port = Number.parseInt(value, 10)
+  return Number.isNaN(port) ? null : port
+}
+
+/**
+ * Find a container port in `runArgs` docker `-p` mappings.
+ *
+ * @param {string[]} runArgs - devcontainer runArgs
+ * @returns {number|null} Container port, or null when none found
+ */
+function findPortInRunArgs(runArgs) {
+  for (let i = 0; i < runArgs.length; i++) {
+    const arg = runArgs[i]
+
+    // Handle -p HOST:CONTAINER
+    if (arg === '-p' && i + 1 < runArgs.length) {
+      const portArg = runArgs[i + 1]
+      if (portArg.includes(':')) {
+        const containerPort = parsePort(portArg.split(':').pop())
+        if (containerPort !== null) return containerPort
+      }
+    }
+
+    // Handle HOST:CONTAINER format directly
+    if (/^\d+:\d+$/.test(arg)) {
+      return parsePort(arg.split(':')[1])
+    }
+  }
+
+  return null
+}
+
 export function detectInternalPort(config) {
   if (!config) return 3000
 
@@ -77,34 +117,14 @@ export function detectInternalPort(config) {
   if (Array.isArray(config.forwardPorts) && config.forwardPorts.length > 0) {
     const port = config.forwardPorts[0]
     if (typeof port === 'number') return port
-    if (typeof port === 'string') {
-      const parsed = parseInt(port, 10)
-      if (!isNaN(parsed)) return parsed
-    }
+    const parsed = parsePort(port)
+    if (parsed !== null) return parsed
   }
 
   // Check runArgs for -p flag
   if (Array.isArray(config.runArgs)) {
-    for (let i = 0; i < config.runArgs.length; i++) {
-      const arg = config.runArgs[i]
-      
-      // Handle -p HOST:CONTAINER
-      if (arg === '-p' && i + 1 < config.runArgs.length) {
-        const portArg = config.runArgs[i + 1]
-        if (portArg.includes(':')) {
-          const parts = portArg.split(':')
-          const containerPort = parseInt(parts[parts.length - 1], 10)
-          if (!isNaN(containerPort)) return containerPort
-        }
-      }
-      
-      // Handle HOST:CONTAINER format directly
-      if (/^\d+:\d+$/.test(arg)) {
-        const parts = arg.split(':')
-        const containerPort = parseInt(parts[1], 10)
-        if (!isNaN(containerPort)) return containerPort
-      }
-    }
+    const fromRunArgs = findPortInRunArgs(config.runArgs)
+    if (fromRunArgs !== null) return fromRunArgs
   }
 
   return 3000

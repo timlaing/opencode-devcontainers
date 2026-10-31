@@ -6,10 +6,10 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
-import { execSync } from 'child_process'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 
 // Module under test
 import { 

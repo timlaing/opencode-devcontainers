@@ -244,74 +244,124 @@ function hasTraversalSegments(target) {
 }
 
 /**
+ * Split a user-supplied target into `repoName` (when `repo/branch` syntax is
+ * used) and `branch`.
+ *
+ * @param {string} branchArg - Branch name or `repo/branch` target
+ * @returns {{repoName: string|null, branch: string}}
+ */
+function parseTarget(branchArg) {
+  if (!branchArg.includes("/")) return { repoName: null, branch: branchArg }
+  const parts = branchArg.split("/")
+  return { repoName: parts[0], branch: parts.slice(1).join("/") }
+}
+
+/**
+ * Resolve the git toplevel of the current directory, or null when not
+ * inside a git repository.
+ *
+ * @returns {string|null}
+ */
+function inferRepoFromCwd() {
+  try {
+    // sonar-disable-next-line javascript:S4036 -- spawn user-installed git binary; must honor PATH
+    return execSync("git rev-parse --show-toplevel", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"]
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Collect decorated matches for `branch` across every repository directory.
+ *
+ * @param {string} baseDir - Clones or worktrees directory
+ * @param {string} branch - Branch name
+ * @param {Function} decorate - Builds the result object for a match
+ * @returns {Array} All matching workspaces
+ */
+function findBranchMatches(baseDir, branch, decorate) {
+  if (!existsSync(baseDir)) return []
+
+  const matches = []
+  for (const repo of readdirSync(baseDir)) {
+    const repoPath = join(baseDir, repo)
+    try {
+      if (!statSync(repoPath).isDirectory()) continue
+    } catch {
+      continue
+    }
+
+    const workspace = join(repoPath, branch)
+    // isInside rejects '..' segments that would escape the base directory
+    if (isInside(baseDir, workspace) && existsSync(workspace)) {
+      matches.push(decorate(workspace, repo, branch))
+    }
+  }
+  return matches
+}
+
+/**
+ * Shared resolver behind resolveWorkspace/resolveWorktreeWorkspace.
+ *
+ * @param {string} baseDir - Clones or worktrees directory
+ * @param {string} branchArg - Branch name or `repo/branch` target
+ * @param {Function} decorate - Builds the result for a workspace match;
+ *   receives the git toplevel as 4th argument when the repo was inferred
+ *   from the current directory
+ * @returns {object|null} Decorated workspace, ambiguity marker, or null
+ */
+function resolveWorkspaceIn(baseDir, branchArg, decorate) {
+  if (hasTraversalSegments(branchArg)) return null
+
+  const { repoName, branch } = parseTarget(branchArg)
+
+  // If repo specified, look directly
+  if (repoName) {
+    const workspace = join(baseDir, repoName, branch)
+    // isInside rejects '..' segments that would escape the base directory
+    return isInside(baseDir, workspace) && existsSync(workspace)
+      ? decorate(workspace, repoName, branch)
+      : null
+  }
+
+  // Try to infer repo from current directory
+  const gitRoot = inferRepoFromCwd()
+  if (gitRoot) {
+    const inferredRepo = basename(gitRoot)
+    const workspace = join(baseDir, inferredRepo, branch)
+    if (isInside(baseDir, workspace) && existsSync(workspace)) {
+      return decorate(workspace, inferredRepo, branch, gitRoot)
+    }
+  }
+
+  // Search all repos for this branch
+  const matches = findBranchMatches(baseDir, branch, decorate)
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    return { ambiguous: true, matches }
+  }
+
+  return null
+}
+
+/**
  * Resolve a user-supplied target (`branch`, `repo/branch`) to an existing
  * devcontainer workspace. Rejects targets with '.'/'..' segments and
- * normalizes every join so a target can never escape the clones or
- * worktrees directories.
+ * normalizes every join so a target can never escape the clones directory.
  *
  * @param {string} branchArg - Branch name or `repo/branch` target
  * @returns {{workspace: string, repoName: string, branch: string, ambiguous?: boolean, matches?: object[]}|null}
  *   Resolved workspace, or null when not found
  */
 export function resolveWorkspace(branchArg) {
-  if (hasTraversalSegments(branchArg)) return null
-
-  const clonesDir = getClonesDir()
-  let repoName = null
-  let branch = branchArg
-  
-  // Handle repo/branch syntax
-  if (branchArg.includes("/")) {
-    const parts = branchArg.split("/")
-    repoName = parts[0]
-    branch = parts.slice(1).join("/")
-  }
-  
-  // If repo specified, look directly
-  if (repoName) {
-    const clonePath = join(clonesDir, repoName, branch)
-    // isInside rejects '..' segments that would escape the clones directory
-    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
-      return { workspace: clonePath, repoName, branch }
-    }
-    return null
-  }
-  
-  // Try to infer repo from current directory
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", { 
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"]
-    }).trim()
-    repoName = basename(gitRoot)
-    const clonePath = join(clonesDir, repoName, branch)
-    if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
-      return { workspace: clonePath, repoName, branch }
-    }
-  } catch {}
-  
-  // Search all repos for this branch
-  if (existsSync(clonesDir)) {
-    const matches = []
-    for (const repo of readdirSync(clonesDir)) {
-      const repoPath = join(clonesDir, repo)
-      try {
-        const stat = statSync(repoPath)
-        if (!stat.isDirectory()) continue
-      } catch { continue }
-      
-      const clonePath = join(repoPath, branch)
-      if (isInside(clonesDir, clonePath) && existsSync(clonePath)) {
-        matches.push({ workspace: clonePath, repoName: repo, branch })
-      }
-    }
-    if (matches.length === 1) return matches[0]
-    if (matches.length > 1) {
-      return { ambiguous: true, matches }
-    }
-  }
-  
-  return null
+  return resolveWorkspaceIn(
+    getClonesDir(),
+    branchArg,
+    (workspace, repoName, branch) => ({ workspace, repoName, branch })
+  )
 }
 
 /**
@@ -319,67 +369,19 @@ export function resolveWorkspace(branchArg) {
  * Similar to resolveWorkspace but for worktrees directory
  */
 export function resolveWorktreeWorkspace(branchArg) {
-  if (hasTraversalSegments(branchArg)) return null
-
-  const worktreesDir = getWorktreesDir()
-  let repoName = null
-  let branch = branchArg
-  
-  // Handle repo/branch syntax
-  if (branchArg.includes("/")) {
-    const parts = branchArg.split("/")
-    repoName = parts[0]
-    branch = parts.slice(1).join("/")
-  }
-  
-  // If repo specified, look directly
-  if (repoName) {
-    const worktreePath = join(worktreesDir, repoName, branch)
-    // isInside rejects '..' segments that would escape the worktrees directory
-    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
-      // Read .git file to get main repo path
-      const mainRepo = getMainRepoFromWorktree(worktreePath)
-      return { workspace: worktreePath, repoName, branch, mainRepo, repo: repoName }
-    }
-    return null
-  }
-  
-  // Try to infer repo from current directory
-  try {
-    const gitRoot = execSync("git rev-parse --show-toplevel", { 
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"]
-    }).trim()
-    repoName = basename(gitRoot)
-    const worktreePath = join(worktreesDir, repoName, branch)
-    if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
-      return { workspace: worktreePath, repoName, branch, mainRepo: gitRoot, repo: repoName }
-    }
-  } catch {}
-  
-  // Search all repos for this branch
-  if (existsSync(worktreesDir)) {
-    const matches = []
-    for (const repo of readdirSync(worktreesDir)) {
-      const repoPath = join(worktreesDir, repo)
-      try {
-        const stat = statSync(repoPath)
-        if (!stat.isDirectory()) continue
-      } catch { continue }
-      
-      const worktreePath = join(repoPath, branch)
-      if (isInside(worktreesDir, worktreePath) && existsSync(worktreePath)) {
-        const mainRepo = getMainRepoFromWorktree(worktreePath)
-        matches.push({ workspace: worktreePath, repoName: repo, branch, mainRepo, repo })
-      }
-    }
-    if (matches.length === 1) return matches[0]
-    if (matches.length > 1) {
-      return { ambiguous: true, matches }
-    }
-  }
-  
-  return null
+  return resolveWorkspaceIn(
+    getWorktreesDir(),
+    branchArg,
+    (workspace, repoName, branch, inferredMainRepo) => ({
+      workspace,
+      repoName,
+      branch,
+      // The inferred-repo path already knows the main repo; otherwise read
+      // it from the worktree's .git file
+      mainRepo: inferredMainRepo ?? getMainRepoFromWorktree(workspace),
+      repo: repoName,
+    })
+  )
 }
 
 /**
@@ -419,7 +421,7 @@ function getMainRepoFromWorktree(worktreePath) {
  *   the HOST: prefix, false to run inside the container
  */
 export function shouldRunOnHost(command) {
-  if (!command || !command.trim()) return true
+  if (!command?.trim()) return true
   
   const trimmed = command.trim()
   
@@ -448,5 +450,5 @@ export function shellQuote(str) {
   }
   // Escape single quotes: close quote, add double-quoted single quote, reopen quote
   // "it's" becomes 'it'"'"'s'
-  return "'" + str.replace(/'/g, "'\"'\"'") + "'"
+  return "'" + str.replaceAll("'", "'\"'\"'") + "'"
 }

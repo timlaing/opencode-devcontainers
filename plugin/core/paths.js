@@ -5,11 +5,11 @@
  * environment variable overrides for testing and custom installations.
  */
 
-import { join, resolve } from 'path'
-import { homedir } from 'os'
-import { createHash } from 'crypto'
-import { mkdir, writeFile, realpath, access, constants } from 'fs/promises'
-import { existsSync } from 'fs'
+import { join, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { mkdir, writeFile, realpath, access, constants } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 
 /**
  * Path constants - all paths are derived from config/cache base dirs

@@ -5,11 +5,8 @@
  * status information for cleanup and management.
  */
 
-import { join } from 'path'
-import { stat } from 'fs/promises'
-import { existsSync } from 'fs'
-import { spawn } from 'child_process'
-import { PATHS } from './paths.js'
+import { stat } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import { listClones } from './clones.js'
 import { listWorktreeWorkspaces } from './worktree.js'
 

@@ -6,11 +6,29 @@
  * the container), so we use full clones with --reference for efficiency.
  */
 
-import { join, basename, dirname } from 'path'
-import { mkdir, rm, readdir, stat, copyFile, readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { join, basename, dirname } from 'node:path'
+import { mkdir, rm, readdir, stat, copyFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { PATHS, exists } from './paths.js'
 import { clone, checkout, getRemoteUrl, getCurrentBranch, listIgnoredFiles } from './git.js'
+
+// Simple concurrency limiter: runs async functions with max N concurrent
+export async function withConcurrency(tasks, limit) {
+  const results = []
+  const executing = []
+  for (const task of tasks) {
+    const p = Promise.resolve().then(task)
+    results.push(p)
+    if (limit <= tasks.length) {
+      const e = p.then(() => executing.splice(executing.indexOf(e), 1))
+      executing.push(e)
+      if (executing.length >= limit) {
+        await Promise.race(executing)
+      }
+    }
+  }
+  return Promise.all(results)
+}
 
 // Lock files to skip (generated, cause merge conflicts)
 const SKIP_FILES = new Set([
@@ -51,56 +69,92 @@ export function getClonePath(repo, branch) {
  * @param {string} dest - Destination clone path
  * @returns {Promise<number>} Number of files copied
  */
-export async function copyGitignored(source, dest) {
-  const ignoredFiles = await listIgnoredFiles(source)
-  if (ignoredFiles.length === 0) return 0
-
-  // Count files per top-level directory
+/**
+ * Count ignored files per top-level directory.
+ *
+ * @param {string[]} ignoredFiles - Relative gitignored file paths
+ * @returns {Map<string, number>} File count keyed by top-level directory
+ */
+function countFilesPerTopDir(ignoredFiles) {
   const dirFileCounts = new Map()
   for (const file of ignoredFiles) {
     const topDir = file.split('/')[0]
     const key = file.includes('/') ? topDir : '.'
     dirFileCounts.set(key, (dirFileCounts.get(key) || 0) + 1)
   }
+  return dirFileCounts
+}
 
-  let copied = 0
+/**
+ * Decide whether an ignored file should be skipped based on its path alone.
+ *
+ * @param {string} relPath - Relative path within the repository
+ * @param {Map<string, number>} dirFileCounts - Per-directory file counts
+ * @returns {boolean} True when the file must not be copied
+ */
+function isSkippableIgnoredPath(relPath, dirFileCounts) {
+  // Skip paths with parent directory references (defense in depth)
+  if (relPath.includes('..')) return true
 
-  for (const relPath of ignoredFiles) {
-    // Skip paths with parent directory references (defense in depth)
-    if (relPath.includes('..')) continue
+  // Skip lock files
+  if (SKIP_FILES.has(basename(relPath))) return true
 
-    // Skip lock files
-    const filename = basename(relPath)
-    if (SKIP_FILES.has(filename)) continue
+  // Skip if directory has too many gitignored files (likely dependencies)
+  const topDir = relPath.includes('/') ? relPath.split('/')[0] : '.'
+  return dirFileCounts.get(topDir) > MAX_FILES_PER_DIR
+}
 
-    // Skip if directory has too many gitignored files (likely dependencies)
-    const topDir = relPath.includes('/') ? relPath.split('/')[0] : '.'
-    if (dirFileCounts.get(topDir) > MAX_FILES_PER_DIR) continue
-
-    const srcPath = join(source, relPath)
-    const destPath = join(dest, relPath)
+/**
+ * Copy a single gitignored file, applying size/type/exists filters.
+ *
+ * @param {string} srcPath - Absolute source path
+ * @param {string} destPath - Absolute destination path
+ * @returns {Promise<boolean>} True when the file was copied
+ */
+async function copyIgnoredFile(srcPath, destPath) {
+  try {
+    const srcStat = await stat(srcPath)
 
     // Only copy files, not directories
-    try {
-      const srcStat = await stat(srcPath)
-      if (!srcStat.isFile()) continue
+    if (!srcStat.isFile()) return false
 
-      // Skip large files
-      if (srcStat.size > MAX_FILE_SIZE) continue
+    // Skip large files
+    if (srcStat.size > MAX_FILE_SIZE) return false
 
-      // Skip if already exists
-      if (existsSync(destPath)) continue
+    // Skip if already exists
+    if (existsSync(destPath)) return false
 
-      // Create parent directory and copy
-      await mkdir(dirname(destPath), { recursive: true })
-      await copyFile(srcPath, destPath)
-      copied++
-    } catch {
-      // Skip files we can't read
-    }
+    // Create parent directory and copy
+    await mkdir(dirname(destPath), { recursive: true })
+    await copyFile(srcPath, destPath)
+    return true
+  } catch {
+    // Skip files we can't read
+    return false
   }
+}
 
-  return copied
+export async function copyGitignored(source, dest) {
+  const ignoredFiles = await listIgnoredFiles(source)
+  if (ignoredFiles.length === 0) return 0
+
+  // Count files per top-level directory
+  const dirFileCounts = countFilesPerTopDir(ignoredFiles)
+
+  const filesToCopy = ignoredFiles.filter(relPath => !isSkippableIgnoredPath(relPath, dirFileCounts))
+
+  // Copy files with limited concurrency to avoid filesystem exhaustion
+  // copyIgnoredFile is idempotent (mkdir -p handles concurrent creation)
+  const results = await withConcurrency(
+    filesToCopy.map((relPath) => async () => {
+      const srcPath = join(source, relPath)
+      const destPath = join(dest, relPath)
+      return copyIgnoredFile(srcPath, destPath)
+    }),
+    32
+  )
+
+  return results.filter(Boolean).length
 }
 
 /**

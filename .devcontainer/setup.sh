@@ -12,7 +12,7 @@ echo "Installing dependencies..."
 # load the interactive shell profile where NVM is typically sourced
 export NVM_DIR="/usr/local/share/nvm"
 # shellcheck source=/dev/null
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+[[ -s "$NVM_DIR/nvm.sh" ]] && . "$NVM_DIR/nvm.sh"
 
 # Install jq
 sudo apt-get update

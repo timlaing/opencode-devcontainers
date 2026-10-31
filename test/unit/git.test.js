@@ -6,10 +6,10 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
-import { execSync } from 'child_process'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 
 // Module under test
 import { 
@@ -278,12 +278,57 @@ describe('fetch', () => {
     rmSync(testDir, { recursive: true, force: true })
   })
 
+  // Push a commit to the remote that localDir hasn't seen yet, returning
+  // its SHA. fetch() swallows git failures (logs instead of throwing), so
+  // the tests must assert the remote-tracking ref actually advances.
+  const seedRemoteCommit = () => {
+    const seedDir = join(testDir, 'seed')
+    execSync(`git clone ${remoteDir} ${seedDir}`, { cwd: testDir })
+    execSync('git config user.email "seed@test.com"', { cwd: seedDir })
+    execSync('git config user.name "Seed"', { cwd: seedDir })
+    writeFileSync(join(seedDir, 'NEW.md'), '# New remote content')
+    execSync('git add .', { cwd: seedDir })
+    execSync('git commit -m "Seed commit"', { cwd: seedDir })
+    execSync('git push origin main', { cwd: seedDir })
+    return execSync('git rev-parse HEAD', { cwd: seedDir }).toString().trim()
+  }
+
+  const trackingRef = () =>
+    execSync('git rev-parse refs/remotes/origin/main', { cwd: localDir }).toString().trim()
+
   test('fetches from remote', async () => {
-    // Should not throw
+    const seedCommit = seedRemoteCommit()
+
     await fetch(localDir)
+
+    assert.strictEqual(trackingRef(), seedCommit)
   })
 
   test('fetches specific remote', async () => {
-    await fetch(localDir, 'origin')
+    // A second remote with its own unseen commit: only fetching the *named*
+    // remote can advance this tracking ref, so an implementation that
+    // ignores the remote argument and fetches the default fails here.
+    const upstreamDir = join(testDir, 'upstream')
+    mkdirSync(upstreamDir, { recursive: true })
+    execSync('git init --bare --initial-branch=main', { cwd: upstreamDir })
+
+    const upstreamSeed = join(testDir, 'upstream-seed')
+    execSync(`git clone ${upstreamDir} ${upstreamSeed}`, { cwd: testDir })
+    execSync('git config user.email "seed@test.com"', { cwd: upstreamSeed })
+    execSync('git config user.name "Seed"', { cwd: upstreamSeed })
+    writeFileSync(join(upstreamSeed, 'UPSTREAM.md'), '# Upstream content')
+    execSync('git add .', { cwd: upstreamSeed })
+    execSync('git commit -m "Upstream commit"', { cwd: upstreamSeed })
+    execSync('git push origin main', { cwd: upstreamSeed })
+    const upstreamCommit = execSync('git rev-parse HEAD', { cwd: upstreamSeed })
+      .toString().trim()
+
+    execSync(`git remote add upstream ${upstreamDir}`, { cwd: localDir })
+
+    await fetch(localDir, 'upstream')
+
+    const upstreamRef = execSync('git rev-parse refs/remotes/upstream/main', { cwd: localDir })
+      .toString().trim()
+    assert.strictEqual(upstreamRef, upstreamCommit)
   })
 })

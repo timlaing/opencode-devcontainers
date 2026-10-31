@@ -6,11 +6,11 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert'
-import { join } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import childProcess from 'child_process'
-import { EventEmitter } from 'events'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import childProcess from 'node:child_process'
+import { EventEmitter } from 'node:events'
 
 // Module under test
 import { 
@@ -160,7 +160,7 @@ describe('isPortFree', () => {
 
   test('returns false for port in use', async () => {
     // Start a server on a random port
-    const net = await import('net')
+    const net = await import('node:net')
     const server = net.createServer()
     
     await new Promise((resolve, reject) => {
@@ -285,8 +285,8 @@ describe('releasePort', () => {
   })
 
   test('does nothing for unknown workspace', async () => {
-    await releasePort('/workspace/unknown')
     // Should not throw
+    await assert.doesNotReject(() => releasePort('/workspace/unknown'))
   })
 
   test('released port can be reallocated', async () => {

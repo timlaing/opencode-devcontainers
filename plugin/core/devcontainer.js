@@ -8,10 +8,10 @@
  * - list: List running containers
  */
 
-import { spawn } from 'child_process'
-import { join, basename } from 'path'
-import { readdirSync, readFileSync, existsSync, unlinkSync } from 'fs'
-import { unlink } from 'fs/promises'
+import { spawn } from 'node:child_process'
+import { join, basename } from 'node:path'
+import { readdirSync, readFileSync, existsSync, unlinkSync } from 'node:fs'
+import { unlink } from 'node:fs/promises'
 import { PATHS, ensureDirs } from './paths.js'
 import { allocatePort, releasePort, readPorts, getContainerPort, updatePortAllocation } from './ports.js'
 import { generateOverrideConfig, getOverridePath, loadUserConfig } from './config.js'
@@ -163,43 +163,65 @@ export function buildExecArgs(workspace, command, options = {}) {
  * @param {AbortSignal} [options.signal] - Abort signal for cancellation
  * @returns {Promise<{workspace: string, port: number, repo: string, branch: string}>}
  */
+/**
+ * Locate devcontainer.json in a workspace, checking both supported layouts.
+ *
+ * @param {string} workspace - Absolute path to workspace
+ * @returns {string|null} Path to devcontainer.json, or null when absent
+ */
+function findDevcontainerPath(workspace) {
+  const nestedPath = `${workspace}/.devcontainer/devcontainer.json`
+  if (existsSync(nestedPath)) return nestedPath
+  const rootPath = `${workspace}/.devcontainer.json`
+  return existsSync(rootPath) ? rootPath : null
+}
+
+/**
+ * Resolve the target of an up() call. Branch names create (or locate) a
+ * clone; absolute workspace paths are used as-is.
+ *
+ * @param {string} workspaceOrBranch - Workspace path or branch name
+ * @param {object} options - up() options
+ * @returns {Promise<{workspace: string, repoName: string, branch: string}>}
+ */
+async function resolveUpTarget(workspaceOrBranch, options) {
+  // Check if it's a branch name (not an absolute path)
+  if (workspaceOrBranch.startsWith('/')) {
+    // It's a workspace path
+    return {
+      workspace: workspaceOrBranch,
+      repoName: basename(workspaceOrBranch),
+      branch: await getCurrentBranch(workspaceOrBranch) || 'unknown',
+    }
+  }
+
+  // It's a branch name - create a clone
+  const cwd = options.cwd || process.cwd()
+  const repoRoot = await getRepoRoot(cwd)
+
+  if (!repoRoot) {
+    throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
+  }
+
+  const cloneResult = await createClone({
+    repoRoot,
+    branch: workspaceOrBranch,
+  })
+
+  return {
+    workspace: cloneResult.workspace,
+    repoName: cloneResult.repoName,
+    branch: cloneResult.branch,
+  }
+}
+
 export async function up(workspaceOrBranch, options = {}) {
   await ensureDirs()
 
-  let workspace = workspaceOrBranch
-  let repoName
-  let branch
-
-  // Check if it's a branch name (not an absolute path)
-  if (!workspaceOrBranch.startsWith('/')) {
-    // It's a branch name - create a clone
-    const cwd = options.cwd || process.cwd()
-    const repoRoot = await getRepoRoot(cwd)
-    
-    if (!repoRoot) {
-      throw new Error('Not in a git repository. Run from a repo directory or specify a workspace path.')
-    }
-
-    const cloneResult = await createClone({
-      repoRoot,
-      branch: workspaceOrBranch,
-    })
-
-    workspace = cloneResult.workspace
-    repoName = cloneResult.repoName
-    branch = cloneResult.branch
-  } else {
-    // It's a workspace path
-    repoName = basename(workspace)
-    branch = await getCurrentBranch(workspace) || 'unknown'
-  }
+  const { workspace, repoName, branch } = await resolveUpTarget(workspaceOrBranch, options)
 
   // Check for devcontainer.json
-  const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
-    ? `${workspace}/.devcontainer/devcontainer.json`
-    : existsSync(`${workspace}/.devcontainer.json`)
-      ? `${workspace}/.devcontainer.json`
-      : null
+  const devcontainerPath = findDevcontainerPath(workspace)
 
   if (!devcontainerPath) {
     throw new Error(`No devcontainer.json found in ${workspace}`)
@@ -327,11 +349,7 @@ async function resolveStartTarget(workspaceOrBranch, options) {
 function assertDevcontainerJson(workspace) {
   if (!existsSync(workspace)) return
 
-  const devcontainerPath = existsSync(`${workspace}/.devcontainer/devcontainer.json`)
-    ? `${workspace}/.devcontainer/devcontainer.json`
-    : existsSync(`${workspace}/.devcontainer.json`)
-      ? `${workspace}/.devcontainer.json`
-      : null
+  const devcontainerPath = findDevcontainerPath(workspace)
 
   if (!devcontainerPath) {
     throw new Error(`No devcontainer.json found in ${workspace}`)
@@ -401,7 +419,7 @@ export async function upBackground(workspaceOrBranch, options = {}) {
  */
 function runUpInBackground(workspaceOrBranch, workspace, repoName, branch, options) {
   // Run async but don't await - this is intentionally fire-and-forget
-  (async () => {
+  void (async () => {
     try {
       // Update status to running
       await updateJob(workspace, JOB_STATUS.RUNNING)
@@ -568,6 +586,77 @@ function cleanupWorkspaceSessions(workspace) {
  * @param {string} branch - Branch name
  * @returns {Promise<{workspace: string, repo: string, branch: string, containerFound: boolean, containerStopped: boolean, containerRemoved: boolean, imageRemoved: boolean, portReleased: boolean, jobRemoved: boolean, overrideDeleted: boolean, cloneDeleted: boolean, sessionsCleaned: number, errors: string[]}>}
  */
+/**
+ * Stop and remove a container (and its image when possible), recording
+ * progress in the summary.
+ *
+ * @param {string} workspace - Workspace path
+ * @param {string} dockerPath - Docker binary
+ * @param {object} summary - Mutable remove() summary
+ */
+async function removeContainerResources(workspace, dockerPath, summary) {
+  // 1. Find Docker container
+  const containerId = await findContainerId(workspace, dockerPath)
+  if (!containerId) return
+  summary.containerFound = true
+
+  // 2. Stop container (ignore error if already stopped)
+  try {
+    await runCommand(dockerPath, ['stop', containerId])
+    summary.containerStopped = true
+  } catch {
+    // Container might not be running
+  }
+
+  // 3. Get image ref before removing container
+  let imageRef = null
+  try {
+    const inspectResult = await runCommand(dockerPath, [
+      'inspect', containerId,
+      '--format', '{{.Image}}',
+    ])
+    if (inspectResult.success && inspectResult.stdout) {
+      imageRef = inspectResult.stdout.trim()
+    }
+  } catch {
+    // Container may have already been removed externally
+  }
+
+  // 4. Remove container
+  try {
+    await runCommand(dockerPath, ['rm', containerId])
+    summary.containerRemoved = true
+  } catch (err) {
+    summary.errors.push(`Failed to remove container: ${err.message}`)
+  }
+
+  // 5. Remove image (after container is removed)
+  if (imageRef) {
+    try {
+      await runCommand(dockerPath, ['rmi', imageRef])
+      summary.imageRemoved = true
+    } catch {
+      // Image may be in use by other containers
+    }
+  }
+}
+
+/**
+ * Run a cleanup step, recording failures in the summary instead of throwing.
+ *
+ * @param {object} summary - Mutable remove() summary
+ * @param {string} errorLabel - Prefix for the recorded error
+ * @param {Function} step - Async cleanup step
+ */
+async function attemptCleanup(summary, errorLabel, step) {
+  try {
+    return await step()
+  } catch (err) {
+    summary.errors.push(`${errorLabel}: ${err.message}`)
+    return undefined
+  }
+}
+
 export async function remove(workspace, repo, branch) {
   const summary = {
     workspace,
@@ -588,91 +677,39 @@ export async function remove(workspace, repo, branch) {
   const config = await loadUserConfig()
   const dockerPath = config.dockerPath || 'docker'
 
-  // 1. Find Docker container
-  const containerId = await findContainerId(workspace, dockerPath)
-  if (containerId) {
-    summary.containerFound = true
-
-    // 2. Stop container (ignore error if already stopped)
-    try {
-      await runCommand(dockerPath, ['stop', containerId])
-      summary.containerStopped = true
-    } catch {
-      // Container might not be running
-    }
-
-    // 3. Get image ref before removing container
-    let imageRef = null
-    try {
-      const inspectResult = await runCommand(dockerPath, [
-        'inspect', containerId,
-        '--format', '{{.Image}}',
-      ])
-      if (inspectResult.success && inspectResult.stdout) {
-        imageRef = inspectResult.stdout.trim()
-      }
-    } catch {
-      // Container may have already been removed externally
-    }
-
-    // 4. Remove container
-    try {
-      await runCommand(dockerPath, ['rm', containerId])
-      summary.containerRemoved = true
-    } catch (err) {
-      summary.errors.push(`Failed to remove container: ${err.message}`)
-    }
-
-    // 5. Remove image (after container is removed)
-    if (imageRef) {
-      try {
-        await runCommand(dockerPath, ['rmi', imageRef])
-        summary.imageRemoved = true
-      } catch {
-        // Image may be in use by other containers
-      }
-    }
-  }
+  // 1-5. Find, stop, and remove the container and its image
+  await removeContainerResources(workspace, dockerPath, summary)
 
   // 6. Release port
-  try {
+  summary.portReleased = await attemptCleanup(summary, 'Failed to release port', async () => {
     await releasePort(workspace)
-    summary.portReleased = true
-  } catch (err) {
-    summary.errors.push(`Failed to release port: ${err.message}`)
-  }
+    return true
+  }) ?? false
 
   // 7. Remove job entry
-  try {
-    summary.jobRemoved = await removeJob(workspace)
-  } catch (err) {
-    summary.errors.push(`Failed to remove job: ${err.message}`)
-  }
+  summary.jobRemoved = await attemptCleanup(summary, 'Failed to remove job', () =>
+    removeJob(workspace)
+  ) ?? false
 
   // 8. Delete override config
-  try {
+  summary.overrideDeleted = await attemptCleanup(summary, 'Failed to delete override', async () => {
     const overridePath = getOverridePath(workspace)
     if (existsSync(overridePath)) {
       await unlink(overridePath)
-      summary.overrideDeleted = true
+      return true
     }
-  } catch (err) {
-    summary.errors.push(`Failed to delete override: ${err.message}`)
-  }
+    return false
+  }) ?? false
 
   // 9. Remove clone folder
-  try {
-    summary.cloneDeleted = await removeClone(repo, branch)
-  } catch (err) {
-    summary.errors.push(`Failed to remove clone: ${err.message}`)
-  }
+  summary.cloneDeleted = await attemptCleanup(summary, 'Failed to remove clone', () =>
+    removeClone(repo, branch)
+  ) ?? false
 
   // 10. Clean up session files
-  try {
-    summary.sessionsCleaned = cleanupWorkspaceSessions(workspace)
-  } catch (err) {
-    summary.errors.push(`Failed to clean sessions: ${err.message}`)
-  }
+  summary.sessionsCleaned = await attemptCleanup(summary, 'Failed to clean sessions', () =>
+    cleanupWorkspaceSessions(workspace)
+  ) ?? 0
 
   return summary
 }

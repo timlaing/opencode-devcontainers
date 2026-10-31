@@ -6,18 +6,17 @@
  * filesystem isolation.
  */
 
-import { join, basename, dirname } from 'path'
-import { mkdir, rm, readdir, stat, readFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { join, basename, dirname } from 'node:path'
+import { mkdir, readdir, stat, readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { PATHS, exists } from './paths.js'
 import { 
   createWorktree as gitCreateWorktree, 
   removeWorktree as gitRemoveWorktree,
   isWorktree,
-  getRepoRoot,
   isGitRepo,
 } from './git.js'
-import { copyGitignored } from './clones.js'
+import { copyGitignored, withConcurrency } from './clones.js'
 
 /**
  * Get the path where a worktree workspace would be created
@@ -81,7 +80,7 @@ export async function createWorktreeWorkspace(options) {
   
   // Run direnv allow if .envrc exists (fire-and-forget)
   if (existsSync(join(workspace, '.envrc'))) {
-    runDirenvAllow(workspace)
+    void runDirenvAllow(workspace)
   }
   
   return { workspace, repoName, branch, mainRepo: repoRoot }
@@ -93,18 +92,51 @@ export async function createWorktreeWorkspace(options) {
  * 
  * @param {string} workspace - Workspace directory
  */
-function runDirenvAllow(workspace) {
-  const { spawn } = require('child_process')
-  
+async function runDirenvAllow(workspace) {
+  let spawnFn
   try {
-    const child = spawn('direnv', ['allow'], {
+    // Dynamic import for ES module compatibility; spawn is used fire-and-forget
+    const { spawn } = await import('node:child_process')
+    spawnFn = spawn
+  } catch {
+    // child_process not available, ignore
+    return
+  }
+
+  try {
+    const child = spawnFn('direnv', ['allow'], {
       cwd: workspace,
       stdio: 'ignore',
       detached: true,
     })
+    // spawn reports ENOENT asynchronously via 'error' — without a listener
+    // an unhandled 'error' event would terminate the plugin process, but
+    // direnv is optional so failures are ignored
+    child.on('error', () => {})
     child.unref()
   } catch {
     // direnv not installed, ignore
+  }
+}
+
+/**
+ * Check whether a workspace directory is a git worktree: its .git entry
+ * must be a file containing a gitdir reference.
+ *
+ * @param {string} workspace - Workspace path
+ * @returns {Promise<boolean>}
+ */
+async function isWorktreeWorkspace(workspace) {
+  const gitPath = join(workspace, '.git')
+  try {
+    const gitStat = await stat(gitPath)
+    if (!gitStat.isFile()) return false
+    // Verify it's a gitdir reference
+    const content = await readFile(gitPath, 'utf-8')
+    return content.startsWith('gitdir:')
+  } catch {
+    // Not a valid worktree
+    return false
   }
 }
 
@@ -125,36 +157,33 @@ export async function listWorktreeWorkspaces(options = {}) {
   
   const repos = await readdir(PATHS.worktrees)
   
-  for (const repo of repos) {
-    if (filterRepo && repo !== filterRepo) continue
-    
-    const repoPath = join(PATHS.worktrees, repo)
-    const repoStat = await stat(repoPath).catch(() => null)
-    if (!repoStat?.isDirectory()) continue
-    
-    const branches = await readdir(repoPath)
-    
-    for (const branch of branches) {
-      const workspace = join(repoPath, branch)
-      const gitPath = join(workspace, '.git')
+  // Process repos in parallel with concurrency limit
+  const repoResults = await withConcurrency(
+    repos.map((repo) => async () => {
+      if (filterRepo && repo !== filterRepo) return []
       
-      // Check if it's a worktree (has .git file, not directory)
-      try {
-        const gitStat = await stat(gitPath)
-        if (gitStat.isFile()) {
-          // Verify it's a gitdir reference
-          const content = await readFile(gitPath, 'utf-8')
-          if (content.startsWith('gitdir:')) {
-            worktrees.push({ workspace, repo, branch })
-          }
-        }
-      } catch {
-        // Not a valid worktree, skip
-      }
-    }
-  }
+      const repoPath = join(PATHS.worktrees, repo)
+      const repoStat = await stat(repoPath).catch(() => null)
+      if (!repoStat?.isDirectory()) return []
+      
+      const branches = await readdir(repoPath)
+      
+      // Check branches in parallel with concurrency limit; isWorktreeWorkspace is independent per branch
+      const branchResults = await withConcurrency(
+        branches.map((branch) => async () => {
+          const workspace = join(repoPath, branch)
+          const isWt = await isWorktreeWorkspace(workspace)
+          return isWt ? { workspace, repo, branch } : null
+        }),
+        32
+      )
+      
+      return branchResults.filter(Boolean)
+    }),
+    16
+  )
   
-  return worktrees
+  return repoResults.flat()
 }
 
 /**

@@ -9,11 +9,11 @@
 
 import { test, describe, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert'
-import { join, basename } from 'path'
-import { homedir } from 'os'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
-import { execSync } from 'child_process'
-import { createHash } from 'crypto'
+import { join, basename } from 'node:path'
+import { homedir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { execSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 
 // Module under test
 import { 
@@ -265,22 +265,19 @@ describe('up (integration)', () => {
   })
 
   test('allocates port and generates override config', async () => {
-    // Note: This will fail if devcontainer CLI is not installed,
-    // but that's expected for unit tests. We can check the setup worked.
-    try {
-      await up(workspaceDir, { dryRun: true })
-    } catch (e) {
-      // Expected in unit test environment without devcontainer
-      if (!e.message.includes('devcontainer')) {
-        throw e
-      }
-    }
-    
-    // Port should have been allocated
+    // dryRun returns the command without invoking the devcontainer CLI
+    const result = await up(workspaceDir, { dryRun: true })
+
+    // The port allocation is persisted before the dry-run short-circuit
     const ports = JSON.parse(readFileSync(join(testDir, 'ports.json'), 'utf-8'))
-    // May or may not have allocated depending on where it failed
-    // Just verify the setup is correct
-    assert.ok(true)
+    assert.strictEqual(ports[workspaceDir].port, result.port)
+    assert.strictEqual(typeof result.port, 'number')
+    assert.strictEqual(result.workspace, workspaceDir)
+    assert.ok(result.command.startsWith('devcontainer '))
+    // Assert the dry-run command has the required structure: devcontainer up <workspace> --override-config <path>
+    assert.ok(result.command.includes(' up '), 'command must include "up" subcommand')
+    assert.ok(result.command.includes(workspaceDir), 'command must include workspace path')
+    assert.ok(result.command.includes('--override-config'), 'command must include override config')
   })
 
   test('accepts signal option for cancellation', async () => {
@@ -399,10 +396,13 @@ describe('runCommand abort signal', () => {
 })
 
 describe('upBackground', () => {
-  const testDir = join(homedir(), '.cache/ocdc-test-upbg-' + Date.now())
-  const workspaceDir = join(testDir, 'workspace')
+  let testDir
+  let workspaceDir
 
   beforeEach(() => {
+    testDir = join(homedir(), '.cache/ocdc-test-upbg-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+    workspaceDir = join(testDir, 'workspace')
+    
     process.env.OCDC_CACHE_DIR = testDir
     process.env.OCDC_CONFIG_DIR = join(testDir, 'config')
     process.env.OCDC_CLONES_DIR = join(testDir, 'clones')
@@ -433,7 +433,7 @@ describe('upBackground', () => {
     // Let any in-flight background start settle before wiping state: the
     // start-dedupe marker is cleared when the background task finishes, and
     // the next test expects a clean slate (jobs.json is reset in beforeEach)
-    await waitForBackgroundSettled(workspaceDir)
+    await waitForBackgroundSettled(workspaceDir, 30000)
 
     delete process.env.OCDC_CACHE_DIR
     delete process.env.OCDC_CONFIG_DIR
@@ -441,7 +441,7 @@ describe('upBackground', () => {
     rmSync(testDir, { recursive: true, force: true })
   })
 
-  async function waitForBackgroundSettled(ws, timeoutMs = 8000) {
+  async function waitForBackgroundSettled(ws, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const job = (await readJobs())[ws]
@@ -454,7 +454,7 @@ describe('upBackground', () => {
     throw new Error(`background start for ${ws} did not settle in time`)
   }
 
-  async function waitForJobStatus(ws, status, timeoutMs = 8000) {
+  async function waitForJobStatus(ws, status, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if ((await readJobs())[ws]?.status === status) return
@@ -463,7 +463,7 @@ describe('upBackground', () => {
     throw new Error(`job for ${ws} never reached ${status}`)
   }
 
-  async function waitForCondition(check, timeoutMs = 8000) {
+  async function waitForCondition(check, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (await check()) return true
@@ -634,7 +634,7 @@ describe('down', () => {
 
   test('handles non-existent workspace', async () => {
     // Should not throw
-    await down('/workspace/nonexistent')
+    await assert.doesNotReject(() => down('/workspace/nonexistent'))
   })
 })
 

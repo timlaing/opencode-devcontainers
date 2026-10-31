@@ -9,13 +9,13 @@
  *
  * Not named *.test.js so `node --test test/unit/*.test.js` does not run it.
  */
-import { join, delimiter } from 'path'
-import { tmpdir } from 'os'
+import { join, delimiter } from 'node:path'
+import { tmpdir } from 'node:os'
 import {
   mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, chmodSync,
   realpathSync,
-} from 'fs'
-import { execSync } from 'child_process'
+} from 'node:fs'
+import { execSync } from 'node:child_process'
 
 import { saveSession as persistSession } from '../../plugin/helpers.js'
 import { JOB_STATUS } from '../../plugin/core/jobs.js'
