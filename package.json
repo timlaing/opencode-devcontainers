@@ -28,6 +28,7 @@
   },
   "scripts": {
     "test": "node --test test/unit/*.test.js",
+    "lint": "eslint .",
     "test:watch": "node --test --watch test/unit/*.test.js",
     "e2e:v2": "node scripts/e2e-v2.mjs",
     "publish:gh-packages": "node scripts/publish-github-packages.mjs",
@@ -40,5 +41,9 @@
   "overrides": {
     "effect": "4.0.6",
     "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "eslint": "^10.14.0",
+    "eslint-plugin-n": "^18.5.0"
   }
 }

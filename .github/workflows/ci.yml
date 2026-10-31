@@ -58,7 +58,10 @@ jobs:
           sudo npm install -g @devcontainers/cli
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        run: npm run lint
 
       # The combined entrypoint must import cleanly and expose the exact shape
       # OpenCode V2's loader requires (default export with id + setup) alongside

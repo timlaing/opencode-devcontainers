@@ -67,6 +67,14 @@ Run the end-to-end check against a real OpenCode V2 runtime (requires the
 npm run e2e:v2
 ```
 
+## Linting
+
+Lint the codebase (enforces `node:`-prefixed built-in imports; runs in CI):
+
+```bash
+npm run lint
+```
+
 This loads the plugin through OpenCode's actual V2 plugin loader in a
 sandboxed environment and exercises registration, `/devcontainer` command
 execution, real agent-loop tool dispatch, the shell-interception hook,
@@ -132,6 +140,7 @@ describe("myFeature", () => {
 ## Code Style
 
 - Use ES modules (`import`/`export`)
+- Prefix Node.js built-in imports with `node:` (e.g. `node:fs`)
 - Use async/await for async operations
 - Handle errors explicitly
 - Add JSDoc comments for public functions
@@ -141,14 +150,15 @@ describe("myFeature", () => {
 1. Create a feature branch: `git checkout -b my-feature`
 2. Make your changes
 3. Run tests: `npm test`
-4. Commit with conventional commit message:
+4. Run lint: `npm run lint`
+5. Commit with conventional commit message:
    - `feat:` for new features
    - `fix:` for bug fixes
    - `docs:` for documentation
    - `refactor:` for refactoring
    - `test:` for tests
    - `chore:` for maintenance
-5. Push and open a pull request
+6. Push and open a pull request
 
 Pull request titles must also use Conventional Commits; the
 `conventional pull request title` workflow rejects anything else.
