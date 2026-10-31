@@ -34,7 +34,11 @@
     "test:coverage": "mkdir -p coverage && node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov --test-reporter-destination=coverage/lcov.info test/unit/*.test.js"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.0.0",
+    "@opencode-ai/plugin": "^1.19.5",
     "@opencode/plugin": "^2.0.30"
+  },
+  "overrides": {
+    "effect": "4.0.6",
+    "zod": "4.6.6"
   }
 }
