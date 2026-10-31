@@ -233,7 +233,7 @@ export async function isWorktree(dir) {
     // Verify it contains a gitdir reference pointing to a worktree administrative directory
     // (trim only line-ending whitespace/newlines; preserve trailing spaces that may be
     // part of the worktree administrative directory name)
-    const content = (await readFile(gitPath, 'utf-8')).replace(/^[\s\r\n]+|[\r\n]+$/g, '')
+    const content = (await readFile(gitPath, 'utf-8')).replace(/^[\r\n]+|[\r\n]+$/g, '')
     return content.startsWith('gitdir:') && /[/\\]worktrees[/\\][^\\/]+$/.test(content)
   } catch {
     return false

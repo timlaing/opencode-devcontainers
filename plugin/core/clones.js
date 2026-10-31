@@ -13,7 +13,7 @@ import { PATHS, exists } from './paths.js'
 import { clone, checkout, getRemoteUrl, getCurrentBranch, listIgnoredFiles } from './git.js'
 
 // Simple concurrency limiter: runs async functions with max N concurrent
-async function withConcurrency(tasks, limit) {
+export async function withConcurrency(tasks, limit) {
   const results = []
   const executing = []
   for (const task of tasks) {

@@ -16,25 +16,7 @@ import {
   isWorktree,
   isGitRepo,
 } from './git.js'
-import { copyGitignored } from './clones.js'
-
-// Simple concurrency limiter: runs async functions with max N concurrent
-async function withConcurrency(tasks, limit) {
-  const results = []
-  const executing = []
-  for (const task of tasks) {
-    const p = Promise.resolve().then(task)
-    results.push(p)
-    if (limit <= tasks.length) {
-      const e = p.then(() => executing.splice(executing.indexOf(e), 1))
-      executing.push(e)
-      if (executing.length >= limit) {
-        await Promise.race(executing)
-      }
-    }
-  }
-  return Promise.all(results)
-}
+import { copyGitignored, withConcurrency } from './clones.js'
 
 /**
  * Get the path where a worktree workspace would be created
