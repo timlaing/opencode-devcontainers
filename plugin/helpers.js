@@ -264,6 +264,7 @@ function parseTarget(branchArg) {
  */
 function inferRepoFromCwd() {
   try {
+    // sonar-disable-next-line javascript:S4036 -- spawn user-installed git binary; must honor PATH
     return execSync("git rev-parse --show-toplevel", {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"]
