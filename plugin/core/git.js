@@ -5,7 +5,7 @@
  * Zero-dependency implementation.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from 'node:child_process'
 
 /**
  * Run a git command and return the output
@@ -221,18 +221,20 @@ export async function listIgnoredFiles(dir) {
  */
 export async function isWorktree(dir) {
   try {
-    const { stat, readFile } = await import('fs/promises')
+    const { stat, readFile } = await import('node:fs/promises')
     const gitPath = `${dir}/.git`
     
     // Check if .git exists and is a file (not directory)
     const gitStat = await stat(gitPath).catch(() => null)
-    if (!gitStat || !gitStat.isFile()) {
+    if (!gitStat?.isFile()) {
       return false
     }
     
     // Verify it contains a gitdir reference pointing to a worktree administrative directory
-    const content = await readFile(gitPath, 'utf-8')
-    return content.startsWith('gitdir:') && /[/\\]worktrees[/\\][^/\\]+\s*$/.test(content)
+    // (content is trimmed first so the anchor needs no whitespace class, which
+    // would make the pattern backtracking-sensitive)
+    const content = (await readFile(gitPath, 'utf-8')).trim()
+    return content.startsWith('gitdir:') && /[/\\]worktrees[/\\][^/\\]+$/.test(content)
   } catch {
     return false
   }
@@ -268,7 +270,7 @@ export async function getWorktreeMainRepo(worktreePath) {
     }
     
     // Fallback: get parent of .git directory
-    const { dirname } = await import('path')
+    const { dirname } = await import('node:path')
     return dirname(commonDir)
   } catch {
     return null

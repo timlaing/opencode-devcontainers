@@ -7,11 +7,10 @@
  * - Port release on container shutdown
  */
 
-import { join } from 'path'
-import { mkdir, rmdir, readFile, writeFile, rename, stat } from 'fs/promises'
-import { existsSync } from 'fs'
-import { createServer } from 'net'
-import childProcess from 'child_process'
+import { join } from 'node:path'
+import { mkdir, rmdir, readFile, writeFile, rename, stat } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import childProcess from 'node:child_process'
 import { PATHS } from './paths.js'
 import { loadUserConfig } from './config.js'
 import { sanitizeDockerFilterValue } from './docker-filter.js'
@@ -292,8 +291,8 @@ export async function getContainerPort(workspace) {
     // Find the first host port mapping
     for (const [, bindings] of Object.entries(portMappings)) {
       if (Array.isArray(bindings) && bindings.length > 0) {
-        const hostPort = parseInt(bindings[0].HostPort, 10)
-        if (!isNaN(hostPort)) {
+        const hostPort = Number.parseInt(bindings[0].HostPort, 10)
+        if (!Number.isNaN(hostPort)) {
           return hostPort
         }
       }

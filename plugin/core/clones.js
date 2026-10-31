@@ -6,9 +6,9 @@
  * the container), so we use full clones with --reference for efficiency.
  */
 
-import { join, basename, dirname } from 'path'
-import { mkdir, rm, readdir, stat, copyFile, readFile, writeFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { join, basename, dirname } from 'node:path'
+import { mkdir, rm, readdir, stat, copyFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { PATHS, exists } from './paths.js'
 import { clone, checkout, getRemoteUrl, getCurrentBranch, listIgnoredFiles } from './git.js'
 
@@ -51,53 +51,87 @@ export function getClonePath(repo, branch) {
  * @param {string} dest - Destination clone path
  * @returns {Promise<number>} Number of files copied
  */
-export async function copyGitignored(source, dest) {
-  const ignoredFiles = await listIgnoredFiles(source)
-  if (ignoredFiles.length === 0) return 0
-
-  // Count files per top-level directory
+/**
+ * Count ignored files per top-level directory.
+ *
+ * @param {string[]} ignoredFiles - Relative gitignored file paths
+ * @returns {Map<string, number>} File count keyed by top-level directory
+ */
+function countFilesPerTopDir(ignoredFiles) {
   const dirFileCounts = new Map()
   for (const file of ignoredFiles) {
     const topDir = file.split('/')[0]
     const key = file.includes('/') ? topDir : '.'
     dirFileCounts.set(key, (dirFileCounts.get(key) || 0) + 1)
   }
+  return dirFileCounts
+}
+
+/**
+ * Decide whether an ignored file should be skipped based on its path alone.
+ *
+ * @param {string} relPath - Relative path within the repository
+ * @param {Map<string, number>} dirFileCounts - Per-directory file counts
+ * @returns {boolean} True when the file must not be copied
+ */
+function isSkippableIgnoredPath(relPath, dirFileCounts) {
+  // Skip paths with parent directory references (defense in depth)
+  if (relPath.includes('..')) return true
+
+  // Skip lock files
+  if (SKIP_FILES.has(basename(relPath))) return true
+
+  // Skip if directory has too many gitignored files (likely dependencies)
+  const topDir = relPath.includes('/') ? relPath.split('/')[0] : '.'
+  return dirFileCounts.get(topDir) > MAX_FILES_PER_DIR
+}
+
+/**
+ * Copy a single gitignored file, applying size/type/exists filters.
+ *
+ * @param {string} srcPath - Absolute source path
+ * @param {string} destPath - Absolute destination path
+ * @returns {Promise<boolean>} True when the file was copied
+ */
+async function copyIgnoredFile(srcPath, destPath) {
+  try {
+    const srcStat = await stat(srcPath)
+
+    // Only copy files, not directories
+    if (!srcStat.isFile()) return false
+
+    // Skip large files
+    if (srcStat.size > MAX_FILE_SIZE) return false
+
+    // Skip if already exists
+    if (existsSync(destPath)) return false
+
+    // Create parent directory and copy
+    await mkdir(dirname(destPath), { recursive: true })
+    await copyFile(srcPath, destPath)
+    return true
+  } catch {
+    // Skip files we can't read
+    return false
+  }
+}
+
+export async function copyGitignored(source, dest) {
+  const ignoredFiles = await listIgnoredFiles(source)
+  if (ignoredFiles.length === 0) return 0
+
+  // Count files per top-level directory
+  const dirFileCounts = countFilesPerTopDir(ignoredFiles)
 
   let copied = 0
 
   for (const relPath of ignoredFiles) {
-    // Skip paths with parent directory references (defense in depth)
-    if (relPath.includes('..')) continue
-
-    // Skip lock files
-    const filename = basename(relPath)
-    if (SKIP_FILES.has(filename)) continue
-
-    // Skip if directory has too many gitignored files (likely dependencies)
-    const topDir = relPath.includes('/') ? relPath.split('/')[0] : '.'
-    if (dirFileCounts.get(topDir) > MAX_FILES_PER_DIR) continue
+    if (isSkippableIgnoredPath(relPath, dirFileCounts)) continue
 
     const srcPath = join(source, relPath)
     const destPath = join(dest, relPath)
 
-    // Only copy files, not directories
-    try {
-      const srcStat = await stat(srcPath)
-      if (!srcStat.isFile()) continue
-
-      // Skip large files
-      if (srcStat.size > MAX_FILE_SIZE) continue
-
-      // Skip if already exists
-      if (existsSync(destPath)) continue
-
-      // Create parent directory and copy
-      await mkdir(dirname(destPath), { recursive: true })
-      await copyFile(srcPath, destPath)
-      copied++
-    } catch {
-      // Skip files we can't read
-    }
+    if (await copyIgnoredFile(srcPath, destPath)) copied++
   }
 
   return copied

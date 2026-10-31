@@ -7,9 +7,9 @@
  * Jobs are persisted to ~/.cache/opencode-devcontainers/jobs.json
  */
 
-import { readFile, writeFile, mkdir, rename } from 'fs/promises'
-import { existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { join, dirname } from 'node:path'
 import { PATHS } from './paths.js'
 import { withLock } from './ports.js'
 

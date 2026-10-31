@@ -6,15 +6,14 @@
  * filesystem isolation.
  */
 
-import { join, basename, dirname } from 'path'
-import { mkdir, rm, readdir, stat, readFile } from 'fs/promises'
-import { existsSync } from 'fs'
+import { join, basename, dirname } from 'node:path'
+import { mkdir, readdir, stat, readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { PATHS, exists } from './paths.js'
 import { 
   createWorktree as gitCreateWorktree, 
   removeWorktree as gitRemoveWorktree,
   isWorktree,
-  getRepoRoot,
   isGitRepo,
 } from './git.js'
 import { copyGitignored } from './clones.js'
@@ -94,7 +93,7 @@ export async function createWorktreeWorkspace(options) {
  * @param {string} workspace - Workspace directory
  */
 function runDirenvAllow(workspace) {
-  const { spawn } = require('child_process')
+  const { spawn } = require('node:child_process')
   
   try {
     const child = spawn('direnv', ['allow'], {
@@ -105,6 +104,27 @@ function runDirenvAllow(workspace) {
     child.unref()
   } catch {
     // direnv not installed, ignore
+  }
+}
+
+/**
+ * Check whether a workspace directory is a git worktree: its .git entry
+ * must be a file containing a gitdir reference.
+ *
+ * @param {string} workspace - Workspace path
+ * @returns {Promise<boolean>}
+ */
+async function isWorktreeWorkspace(workspace) {
+  const gitPath = join(workspace, '.git')
+  try {
+    const gitStat = await stat(gitPath)
+    if (!gitStat.isFile()) return false
+    // Verify it's a gitdir reference
+    const content = await readFile(gitPath, 'utf-8')
+    return content.startsWith('gitdir:')
+  } catch {
+    // Not a valid worktree
+    return false
   }
 }
 
@@ -136,20 +156,8 @@ export async function listWorktreeWorkspaces(options = {}) {
     
     for (const branch of branches) {
       const workspace = join(repoPath, branch)
-      const gitPath = join(workspace, '.git')
-      
-      // Check if it's a worktree (has .git file, not directory)
-      try {
-        const gitStat = await stat(gitPath)
-        if (gitStat.isFile()) {
-          // Verify it's a gitdir reference
-          const content = await readFile(gitPath, 'utf-8')
-          if (content.startsWith('gitdir:')) {
-            worktrees.push({ workspace, repo, branch })
-          }
-        }
-      } catch {
-        // Not a valid worktree, skip
+      if (await isWorktreeWorkspace(workspace)) {
+        worktrees.push({ workspace, repo, branch })
       }
     }
   }
