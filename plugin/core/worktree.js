@@ -145,30 +145,31 @@ export async function listWorktreeWorkspaces(options = {}) {
   
   const repos = await readdir(PATHS.worktrees)
   
-  for (const repo of repos) {
-    if (filterRepo && repo !== filterRepo) continue
-    
-    const repoPath = join(PATHS.worktrees, repo)
-    const repoStat = await stat(repoPath).catch(() => null)
-    if (!repoStat?.isDirectory()) continue
-    
-    const branches = await readdir(repoPath)
-    
-    // Check branches in parallel; isWorktreeWorkspace is independent per branch
-    const branchResults = await Promise.all(
-      branches.map(async (branch) => {
-        const workspace = join(repoPath, branch)
-        const isWt = await isWorktreeWorkspace(workspace)
-        return isWt ? { workspace, repo, branch } : null
-      })
-    )
-    
-    for (const result of branchResults) {
-      if (result) worktrees.push(result)
-    }
-  }
+  // Process repos in parallel; each repo's branches are processed in parallel
+  const repoResults = await Promise.all(
+    repos.map(async (repo) => {
+      if (filterRepo && repo !== filterRepo) return []
+      
+      const repoPath = join(PATHS.worktrees, repo)
+      const repoStat = await stat(repoPath).catch(() => null)
+      if (!repoStat?.isDirectory()) return []
+      
+      const branches = await readdir(repoPath)
+      
+      // Check branches in parallel; isWorktreeWorkspace is independent per branch
+      const branchResults = await Promise.all(
+        branches.map(async (branch) => {
+          const workspace = join(repoPath, branch)
+          const isWt = await isWorktreeWorkspace(workspace)
+          return isWt ? { workspace, repo, branch } : null
+        })
+      )
+      
+      return branchResults.filter(Boolean)
+    })
+  )
   
-  return worktrees
+  return repoResults.flat()
 }
 
 /**
