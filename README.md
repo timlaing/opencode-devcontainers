@@ -222,7 +222,7 @@ Override default paths:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, verification and
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup (including `npm run lint`), verification and
 release workflow. Report vulnerabilities privately as described in
 [SECURITY.md](SECURITY.md).
 

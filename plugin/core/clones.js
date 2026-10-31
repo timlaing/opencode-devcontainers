@@ -12,6 +12,24 @@ import { existsSync } from 'node:fs'
 import { PATHS, exists } from './paths.js'
 import { clone, checkout, getRemoteUrl, getCurrentBranch, listIgnoredFiles } from './git.js'
 
+// Simple concurrency limiter: runs async functions with max N concurrent
+async function withConcurrency(tasks, limit) {
+  const results = []
+  const executing = []
+  for (const task of tasks) {
+    const p = Promise.resolve().then(task)
+    results.push(p)
+    if (limit <= tasks.length) {
+      const e = p.then(() => executing.splice(executing.indexOf(e), 1))
+      executing.push(e)
+      if (executing.length >= limit) {
+        await Promise.race(executing)
+      }
+    }
+  }
+  return Promise.all(results)
+}
+
 // Lock files to skip (generated, cause merge conflicts)
 const SKIP_FILES = new Set([
   'package-lock.json',
@@ -125,14 +143,15 @@ export async function copyGitignored(source, dest) {
 
   const filesToCopy = ignoredFiles.filter(relPath => !isSkippableIgnoredPath(relPath, dirFileCounts))
 
-  // Copy files in parallel; copyIgnoredFile is idempotent (mkdir -p handles
-  // concurrent creation, copy is per-file independent)
-  const results = await Promise.all(
-    filesToCopy.map(async (relPath) => {
+  // Copy files with limited concurrency to avoid filesystem exhaustion
+  // copyIgnoredFile is idempotent (mkdir -p handles concurrent creation)
+  const results = await withConcurrency(
+    filesToCopy.map((relPath) => async () => {
       const srcPath = join(source, relPath)
       const destPath = join(dest, relPath)
       return copyIgnoredFile(srcPath, destPath)
-    })
+    }),
+    32
   )
 
   return results.filter(Boolean).length

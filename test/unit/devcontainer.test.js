@@ -274,6 +274,10 @@ describe('up (integration)', () => {
     assert.strictEqual(typeof result.port, 'number')
     assert.strictEqual(result.workspace, workspaceDir)
     assert.ok(result.command.startsWith('devcontainer '))
+    // Assert the dry-run command has the required structure: devcontainer up <workspace> --override-config <path>
+    assert.ok(result.command.includes(' up '), 'command must include "up" subcommand')
+    assert.ok(result.command.includes(workspaceDir), 'command must include workspace path')
+    assert.ok(result.command.includes('--override-config'), 'command must include override config')
   })
 
   test('accepts signal option for cancellation', async () => {
