@@ -46,8 +46,8 @@ if [[ -n "$SCRIPT_DIR" ]] && [[ -f "$SCRIPT_DIR/bin/ocdc" ]]; then
     cp "$SCRIPT_DIR/package.json" "$LIB_DIR/package.json"
     cp "$SCRIPT_DIR/package-lock.json" "$LIB_DIR/package-lock.json" 2>/dev/null || true
     echo "  Installing Node.js dependencies..."
-    (cd "$LIB_DIR" && npm ci --omit=dev --silent 2>/dev/null) || \
-    (cd "$LIB_DIR" && npm install --omit=dev --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm ci --omit=dev --ignore-scripts --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm install --omit=dev --ignore-scripts --silent 2>/dev/null) || \
       echo "  WARNING: npm install failed. Poll MCP sources may not work."
   fi
 else
@@ -56,34 +56,34 @@ else
   
   # Download main executable
   echo "  Downloading: bin/ocdc"
-  if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/bin/ocdc" -o "$INSTALL_DIR/ocdc"; then
+  if curl -fsSL --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/bin/ocdc" -o "$INSTALL_DIR/ocdc"; then
     chmod +x "$INSTALL_DIR/ocdc"
     echo "  Installed: bin/ocdc"
   else
-    echo "  ERROR: Failed to download ocdc"
+    echo "  ERROR: Failed to download ocdc" >&2
     exit 1
   fi
   
   # Download lib scripts
   for script in $LIB_SCRIPTS; do
     echo "  Downloading: lib/$script"
-    if curl -fsSL "https://raw.githubusercontent.com/$REPO/main/lib/$script" -o "$LIB_DIR/$script"; then
+    if curl -fsSL --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/lib/$script" -o "$LIB_DIR/$script"; then
       chmod +x "$LIB_DIR/$script"
       echo "  Installed: lib/$script"
     else
-      echo "  ERROR: Failed to download $script"
+      echo "  ERROR: Failed to download $script" >&2
       exit 1
     fi
   done
   
   # Download and install Node.js dependencies for MCP fetch
   echo "  Downloading: package.json"
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/package.json" -o "$LIB_DIR/package.json" || true
-  curl -fsSL "https://raw.githubusercontent.com/$REPO/main/package-lock.json" -o "$LIB_DIR/package-lock.json" 2>/dev/null || true
+  curl -fsSL --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/package.json" -o "$LIB_DIR/package.json" || true
+  curl -fsSL --proto '=https' --tlsv1.2 "https://raw.githubusercontent.com/$REPO/main/package-lock.json" -o "$LIB_DIR/package-lock.json" 2>/dev/null || true
   if [[ -f "$LIB_DIR/package.json" ]]; then
     echo "  Installing Node.js dependencies..."
-    (cd "$LIB_DIR" && npm ci --omit=dev --silent 2>/dev/null) || \
-    (cd "$LIB_DIR" && npm install --omit=dev --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm ci --omit=dev --ignore-scripts --silent 2>/dev/null) || \
+    (cd "$LIB_DIR" && npm install --omit=dev --ignore-scripts --silent 2>/dev/null) || \
       echo "  WARNING: npm install failed. Poll MCP sources may not work."
   fi
 fi
