@@ -67,14 +67,6 @@ Run the end-to-end check against a real OpenCode V2 runtime (requires the
 npm run e2e:v2
 ```
 
-## Linting
-
-Lint the codebase (enforces `node:`-prefixed built-in imports; runs in CI):
-
-```bash
-npm run lint
-```
-
 This loads the plugin through OpenCode's actual V2 plugin loader in a
 sandboxed environment and exercises registration, `/devcontainer` command
 execution, real agent-loop tool dispatch, the shell-interception hook,
@@ -82,6 +74,14 @@ multi-session routing, and stale-session cleanup over the HTTP API. It is
 deterministic, offline, and free: only external dependencies (the LLM and
 the container CLIs) are faked. Set `OCDC_E2E_KEEP=1` to keep the sandbox
 directory for inspection.
+
+## Linting
+
+Lint the codebase (enforces `node:`-prefixed built-in imports; runs in CI):
+
+```bash
+npm run lint
+```
 
 ## Project Structure
 

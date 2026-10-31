@@ -278,12 +278,37 @@ describe('fetch', () => {
     rmSync(testDir, { recursive: true, force: true })
   })
 
+  // Push a commit to the remote that localDir hasn't seen yet, returning
+  // its SHA. fetch() swallows git failures (logs instead of throwing), so
+  // the tests must assert the remote-tracking ref actually advances.
+  const seedRemoteCommit = () => {
+    const seedDir = join(testDir, 'seed')
+    execSync(`git clone ${remoteDir} ${seedDir}`, { cwd: testDir })
+    execSync('git config user.email "seed@test.com"', { cwd: seedDir })
+    execSync('git config user.name "Seed"', { cwd: seedDir })
+    writeFileSync(join(seedDir, 'NEW.md'), '# New remote content')
+    execSync('git add .', { cwd: seedDir })
+    execSync('git commit -m "Seed commit"', { cwd: seedDir })
+    execSync('git push origin main', { cwd: seedDir })
+    return execSync('git rev-parse HEAD', { cwd: seedDir }).toString().trim()
+  }
+
+  const trackingRef = () =>
+    execSync('git rev-parse refs/remotes/origin/main', { cwd: localDir }).toString().trim()
+
   test('fetches from remote', async () => {
-    // Should not throw
-    await assert.doesNotReject(() => fetch(localDir))
+    const seedCommit = seedRemoteCommit()
+
+    await fetch(localDir)
+
+    assert.strictEqual(trackingRef(), seedCommit)
   })
 
   test('fetches specific remote', async () => {
-    await assert.doesNotReject(() => fetch(localDir, 'origin'))
+    const seedCommit = seedRemoteCommit()
+
+    await fetch(localDir, 'origin')
+
+    assert.strictEqual(trackingRef(), seedCommit)
   })
 })
