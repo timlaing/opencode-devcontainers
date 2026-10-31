@@ -109,6 +109,10 @@ async function runDirenvAllow(workspace) {
       stdio: 'ignore',
       detached: true,
     })
+    // spawn reports ENOENT asynchronously via 'error' — without a listener
+    // an unhandled 'error' event would terminate the plugin process, but
+    // direnv is optional so failures are ignored
+    child.on('error', () => {})
     child.unref()
   } catch {
     // direnv not installed, ignore

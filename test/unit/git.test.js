@@ -305,10 +305,30 @@ describe('fetch', () => {
   })
 
   test('fetches specific remote', async () => {
-    const seedCommit = seedRemoteCommit()
+    // A second remote with its own unseen commit: only fetching the *named*
+    // remote can advance this tracking ref, so an implementation that
+    // ignores the remote argument and fetches the default fails here.
+    const upstreamDir = join(testDir, 'upstream')
+    mkdirSync(upstreamDir, { recursive: true })
+    execSync('git init --bare --initial-branch=main', { cwd: upstreamDir })
 
-    await fetch(localDir, 'origin')
+    const upstreamSeed = join(testDir, 'upstream-seed')
+    execSync(`git clone ${upstreamDir} ${upstreamSeed}`, { cwd: testDir })
+    execSync('git config user.email "seed@test.com"', { cwd: upstreamSeed })
+    execSync('git config user.name "Seed"', { cwd: upstreamSeed })
+    writeFileSync(join(upstreamSeed, 'UPSTREAM.md'), '# Upstream content')
+    execSync('git add .', { cwd: upstreamSeed })
+    execSync('git commit -m "Upstream commit"', { cwd: upstreamSeed })
+    execSync('git push origin main', { cwd: upstreamSeed })
+    const upstreamCommit = execSync('git rev-parse HEAD', { cwd: upstreamSeed })
+      .toString().trim()
 
-    assert.strictEqual(trackingRef(), seedCommit)
+    execSync(`git remote add upstream ${upstreamDir}`, { cwd: localDir })
+
+    await fetch(localDir, 'upstream')
+
+    const upstreamRef = execSync('git rev-parse refs/remotes/upstream/main', { cwd: localDir })
+      .toString().trim()
+    assert.strictEqual(upstreamRef, upstreamCommit)
   })
 })
