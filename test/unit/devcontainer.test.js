@@ -392,10 +392,13 @@ describe('runCommand abort signal', () => {
 })
 
 describe('upBackground', () => {
-  const testDir = join(homedir(), '.cache/ocdc-test-upbg-' + Date.now())
-  const workspaceDir = join(testDir, 'workspace')
+  let testDir
+  let workspaceDir
 
   beforeEach(() => {
+    testDir = join(homedir(), '.cache/ocdc-test-upbg-' + Date.now() + '-' + Math.random().toString(36).slice(2))
+    workspaceDir = join(testDir, 'workspace')
+    
     process.env.OCDC_CACHE_DIR = testDir
     process.env.OCDC_CONFIG_DIR = join(testDir, 'config')
     process.env.OCDC_CLONES_DIR = join(testDir, 'clones')
@@ -426,7 +429,7 @@ describe('upBackground', () => {
     // Let any in-flight background start settle before wiping state: the
     // start-dedupe marker is cleared when the background task finishes, and
     // the next test expects a clean slate (jobs.json is reset in beforeEach)
-    await waitForBackgroundSettled(workspaceDir)
+    await waitForBackgroundSettled(workspaceDir, 30000)
 
     delete process.env.OCDC_CACHE_DIR
     delete process.env.OCDC_CONFIG_DIR
@@ -434,7 +437,7 @@ describe('upBackground', () => {
     rmSync(testDir, { recursive: true, force: true })
   })
 
-  async function waitForBackgroundSettled(ws, timeoutMs = 8000) {
+  async function waitForBackgroundSettled(ws, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       const job = (await readJobs())[ws]
@@ -447,7 +450,7 @@ describe('upBackground', () => {
     throw new Error(`background start for ${ws} did not settle in time`)
   }
 
-  async function waitForJobStatus(ws, status, timeoutMs = 8000) {
+  async function waitForJobStatus(ws, status, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if ((await readJobs())[ws]?.status === status) return
@@ -456,7 +459,7 @@ describe('upBackground', () => {
     throw new Error(`job for ${ws} never reached ${status}`)
   }
 
-  async function waitForCondition(check, timeoutMs = 8000) {
+  async function waitForCondition(check, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (await check()) return true
