@@ -11,8 +11,6 @@ on:
   # here would leave PRs that don't touch the lockfile waiting on a check
   # that never runs.
   pull_request:
-  schedule:
-    - cron: '0 9 * * 1'
   workflow_dispatch:
 
 permissions:
