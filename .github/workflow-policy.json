@@ -1,0 +1,26 @@
+{
+  "default_workflow_permissions": "read",
+  "required_checks": [
+    "Validate ci",
+    "Validate dependency-audit",
+    "Validate conventional-title",
+    "Validate docs",
+    "Validate codeql",
+    "Validate analysis-inputs",
+    "Analysis passed",
+    "Workflow policy",
+    "Review passed"
+  ],
+  "review_gate_requires_main": true,
+  "sha_pinning_required": true,
+  "validation_checks": [
+    "Validate ci",
+    "Validate dependency-audit",
+    "Validate conventional-title",
+    "Validate docs",
+    "Validate codeql",
+    "Validate analysis-inputs",
+    "Analysis passed",
+    "Workflow policy"
+  ]
+}

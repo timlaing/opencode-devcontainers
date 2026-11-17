@@ -211,3 +211,7 @@ Releases are event-driven — publishing never happens on pushes to main:
    (OIDC with provenance), and mirrors the same version to GitHub Packages
 4. Re-running the job is safe — both publishes skip versions that already
    exist
+
+## Required workflow validation
+
+See [.github/WORKFLOW_POLICY.md](.github/WORKFLOW_POLICY.md) for the required validation aggregates, trusted Sonar coverage handoff and current-commit review gate. Repository protection is recorded in `.github/workflow-policy.json`; introducing default-branch workflows requires a post-merge policy migration.

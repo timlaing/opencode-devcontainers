@@ -3,10 +3,6 @@ name: Dependency audit
 on:
   push:
     branches: [main]
-    paths:
-      - package.json
-      - package-lock.json
-      - .github/workflows/dependency-audit.yml
   # Every PR runs the audit so the check always registers; a paths filter
   # here would leave PRs that don't touch the lockfile waiting on a check
   # that never runs.
@@ -31,7 +27,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
       - run: npm ci --ignore-scripts
       # Scope to runtime dependencies: only @opencode-ai/plugin ships to
@@ -40,3 +36,24 @@ jobs:
       # are pinned inside npm-CLI internals that @opencode/util depends on and
       # report "fix available: false" upstream, so no local fix exists.
       - run: npm audit --omit=dev --audit-level=high
+
+  validation-result:
+    name: Validate dependency-audit
+    needs:
+      - npm
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Validation incomplete: ' + ', '.join(failed))
+          PY
