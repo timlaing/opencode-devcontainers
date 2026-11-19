@@ -43,7 +43,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
 
       - name: Configure git for tests
@@ -55,7 +55,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-          sudo npm install -g @devcontainers/cli
+          sudo npm install -g @devcontainers/cli@0.90.0 --ignore-scripts
 
       - name: Install Node.js dependencies
         run: npm ci --ignore-scripts
@@ -107,8 +107,8 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write   # OIDC for npmjs trusted publishing (and provenance)
-      packages: write   # Publish to the GitHub Packages npm registry
+      id-token: write # OIDC for npmjs trusted publishing (and provenance)
+      packages: write # Publish to the GitHub Packages npm registry
     steps:
       # On release events actions/checkout defaults to the release tag, so
       # the published artifact matches the tagged commit exactly.
@@ -140,7 +140,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: "22"
           cache: npm
 
       # npm trusted publishing (OIDC) requires npm >= 11.5.1; the runner's
@@ -275,3 +275,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+  validation-result:
+    name: Validate ci
+    needs:
+      - test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Validation incomplete: ' + ', '.join(failed))
+          PY

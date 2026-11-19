@@ -1,7 +1,7 @@
 name: conventional pull request title
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, edited, reopened, ready_for_review, synchronize]
 
 permissions:
@@ -20,3 +20,24 @@ jobs:
           fi
           printf 'Pull request titles must use Conventional Commits: %s\n' "$TITLE"
           exit 1
+
+  validation-result:
+    name: Validate conventional-title
+    needs:
+      - validate
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Validation incomplete: ' + ', '.join(failed))
+          PY

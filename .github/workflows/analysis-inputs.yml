@@ -1,0 +1,143 @@
+name: Analysis inputs
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+concurrency:
+  group: analysis-inputs-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@test.local"
+          git config --global user.name "CI Test"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+          sudo npm install -g @devcontainers/cli@0.90.0 --ignore-scripts
+      - name: Install Node.js dependencies
+        run: npm ci --ignore-scripts
+      - name: Install opencode
+        run: |
+          sudo npm install -g opencode-ai@1.19.6 --ignore-scripts
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config" "$HOME/.cache" 2>/dev/null || true
+      - name: Setup opencode plugin
+        run: |
+          mkdir -p ~/.config/opencode/plugins
+          cp -r plugin ~/.config/opencode/plugins/opencode-devcontainers
+          mkdir -p ~/.config/opencode
+          cat > ~/.config/opencode/opencode.json << 'EOF'
+          {
+            "model": "opencode/gpt-5-nano",
+            "plugin": ["/home/runner/.config/opencode/plugins/opencode-devcontainers"]
+          }
+          EOF
+      - name: Run tests with coverage
+        run:
+          node --test --experimental-test-coverage --test-reporter=spec --test-reporter-destination=stdout --test-reporter=lcov
+          --test-reporter-destination=lcov.info test/unit/*.test.js
+      - name: Record analysis revision
+        run: git rev-parse HEAD > coverage-revision.txt
+      - name: Collect analysis inputs
+        run: |
+          python3 -I - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('.')
+          out = root / '.analysis-inputs'
+          out.mkdir()
+          patterns = ['coverage-revision.txt', 'coverage.xml', 'coverage.out', 'lcov.info', 'coverage/**', 'coverage-js/**', 'gcov/**', 'build/compile_commands.json', 'dist/**']
+          count = 0
+          for pattern in patterns:
+              for source in root.glob(pattern):
+                  if source.is_symlink():
+                      raise SystemExit('Symlink is not an analysis input')
+                  if source.is_file():
+                      target = out / source
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      shutil.copyfile(source, target)
+                      count += 1
+          if not count:
+              raise SystemExit('No analysis inputs were generated')
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: analysis-inputs
+          path: .analysis-inputs/
+          if-no-files-found: error
+          retention-days: "7"
+          include-hidden-files: true
+    permissions:
+      contents: read
+    name: Generate analysis inputs
+  validation-result:
+    name: Validate analysis-inputs
+    needs:
+      - coverage
+      - workflow-tooling
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every validation job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in results.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit('Validation incomplete: ' + ', '.join(failed))
+          PY
+  workflow-tooling:
+    name: Workflow tooling coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "26"
+      - name: Measure policy and coordinator coverage
+        run: |
+          python3 -m pip install --only-binary=:all: PyYAML==6.0.3 coverage==7.11.0
+          mkdir -p coverage-workflow
+          python3 -m coverage run --branch --source=.github/scripts -m unittest discover -s .github/scripts
+          python3 -m coverage xml -o coverage-workflow/python.xml
+          node --test --experimental-test-coverage --test-reporter=lcov --test-reporter-destination=coverage-workflow/javascript.lcov .github/scripts/*.test.cjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: workflow-tooling-coverage
+          path: coverage-workflow/
+          if-no-files-found: error
+          retention-days: 7
